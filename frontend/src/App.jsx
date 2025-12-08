@@ -1,35 +1,48 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { useState } from 'react';
+import { Dashboard } from './components/Dashboard';
+import { Sidebar } from './components/Sidebar';
+import { TopNav } from './components/TopNav';
 
-function App() {
-  const [count, setCount] = useState(0)
+// Diğer bileşenler henüz boşsa hata vermemesi için basitçe import edelim
+// Eğer yukarıdaki 4. adımı yaptıysan bu importları açabilirsin:
+import { Cameras } from './components/Cameras';
+import { ModelManagement } from './components/ModelManagement'; 
+import { Violations } from './components/Violations';
+import { Reporting } from './components/Reporting';
+import { Settings } from './components/Settings';
+
+export default function App() {
+  const [activePage, setActivePage] = useState('dashboard');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  const renderPage = () => {
+    switch (activePage) {
+      case 'dashboard': return <Dashboard />;
+      case 'cameras': return <Cameras />;
+      case 'model': return <ModelManagement />;
+      case 'violations': return <Violations />;
+      case 'reporting': return <Reporting />;
+      case 'settings': return <Settings />;
+      default: return <Dashboard />;
+    }
+  };
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="flex h-screen bg-gray-50 font-sans">
+      <Sidebar 
+        activePage={activePage} 
+        setActivePage={setActivePage}
+        isOpen={isSidebarOpen}
+        setIsOpen={setIsSidebarOpen}
+      />
+      
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <TopNav toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} />
+        
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+          {renderPage()}
+        </main>
       </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    </div>
+  );
 }
-
-export default App
