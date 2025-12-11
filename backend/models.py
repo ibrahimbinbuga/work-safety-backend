@@ -47,3 +47,11 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
+
+class Violation(Base):
+    __tablename__ = "violations"
+    id = Column(Integer, primary_key=True, index=True)
+    tarih_saat = Column(DateTime(timezone=True), server_default=func.now())
+    ihlal_cesidi = Column(String)            # helmet, vest, both vb.
+    ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge
+    violation_id = Column(String, unique=True, index=True)

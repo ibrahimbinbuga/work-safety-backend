@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
             
             # A. Kameralar
             cam1 = models.Camera(name="Warehouse A - Entry", location="Zone 1", rtsp_url="rtsp://192.168.1.10", status="online")
-            cam2 = models.Camera(name="Construction Zone 3", location="Zone 3", rtsp_url="rtsp://192.168.1.11", status="online")
+            cam2 = models.Camera(name="Hello", location="Zone 3", rtsp_url="rtsp://192.168.1.11", status="online")
             cam3 = models.Camera(name="Loading Dock", location="Zone 2", rtsp_url="rtsp://192.168.1.12", status="offline")
             session.add_all([cam1, cam2, cam3])
             await session.commit()
@@ -61,4 +61,9 @@ async def root():
 @app.get("/api/cameras")
 async def get_cameras(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(models.Camera))
+    return result.scalars().all()
+
+@app.get("/api/violations")
+async def get_violations(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(models.Violation))
     return result.scalars().all()

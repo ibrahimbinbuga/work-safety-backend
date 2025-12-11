@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, CheckCircle, Clock } from 'lucide-react';
+import axios from "axios";
+import { useEffect } from "react";
 
 // Şimdilik statik veri (İleride Backend'den çekilecek)
-const initialViolations = [
+/*const initialViolations = [
   {
     id: 'V-2025-1247',
     workerName: 'Worker #A342',
@@ -57,25 +59,53 @@ const initialViolations = [
     severity: 'high',
     status: 'resolved',
   },
-];
+];*/
+
+
+
 
 export function Violations() {
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [violations, setViolations] = useState([]);
+
+  useEffect(() => {
+    fetchViolations();
+  }, []);
+
+  const fetchViolations = async () => {
+    try {
+      const response = await axios.get("http://127.0.0.1:8000/api/violations");
+
+      const processed = response.data.map(v => ({
+        id: v.violation_id,
+        workerName: "Unknown Worker",
+        camera: v.ihlal_yapilan_bolge,
+        type: v.ihlal_cesidi,
+        timestamp: v.tarih_saat,
+        severity: "high",
+        status: "pending"
+      }));
+
+      setViolations(processed);
+    } catch (error) {
+      console.error("Violations fetch error:", error);
+    }
+  };
 
   // Filtreleme Mantığı
-  const filteredViolations = initialViolations.filter(v => {
-    const typeMatch = filterType === 'all' || v.type === filterType;
+  const filteredViolations = violations.filter(v => {
+    const typeMatch = filterType === 'all' || (filterType === 'helmet' && v.type === 'head') || v.type === filterType;
     const statusMatch = filterStatus === 'all' || v.status === filterStatus;
     return typeMatch && statusMatch;
   });
 
   // İstatistikleri hesapla
   const stats = {
-    total: initialViolations.length,
-    helmet: initialViolations.filter(v => v.type === 'helmet').length,
-    vest: initialViolations.filter(v => v.type === 'vest').length,
-    pending: initialViolations.filter(v => v.status === 'pending').length
+    total: violations.length,
+    head: violations.filter(v => v.type === 'head').length,
+    vest: violations.filter(v => v.type === 'vest').length,
+    pending: violations.filter(v => v.status === 'pending').length
   };
 
   return (
@@ -101,7 +131,7 @@ export function Violations() {
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex justify-between items-start">
             <div>
                 <p className="text-gray-500 text-sm font-medium">Helmet Violations</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.helmet}</h3>
+                <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.head}</h3>
             </div>
             <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center text-red-600">
                 <HardHat className="w-6 h-6" />
@@ -145,7 +175,7 @@ export function Violations() {
                     className="appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
                     <option value="all">All Types</option>
-                    <option value="helmet">Helmet</option>
+                    <option value="head">Helmet</option>
                     <option value="vest">Vest</option>
                     <option value="both">Both</option>
                 </select>
@@ -209,7 +239,7 @@ export function Violations() {
                     </div>
                   </td>
                   <td className="p-4">
-                    {violation.type === 'helmet' && (
+                    {violation.type === 'head' && (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-100">
                         <HardHat className="w-3 h-3" /> Helmet
                       </span>
