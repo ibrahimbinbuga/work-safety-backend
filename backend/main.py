@@ -202,6 +202,13 @@ async def get_detections(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(models.Detection))
     return result.scalars().all()
 
+@app.get("/api/violations")
+async def get_violations(db: AsyncSession = Depends(get_db)):
+    """Get all violations from the database."""
+    result = await db.execute(select(models.Violation).order_by(models.Violation.tarih_saat.desc()))
+    violations = result.scalars().all()
+    return violations
+
 @app.post("/api/camera/{camera_id}/start-local")
 async def api_start_local_camera(camera_id: int):
     """Start camera thread with local camera (0) instead of RTSP URL."""
