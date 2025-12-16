@@ -4,6 +4,8 @@ import threading
 import uuid
 import cv2
 import numpy as np
+import os
+from pathlib import Path
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -13,6 +15,10 @@ import models
 from camera_runner import run_camera_thread, get_latest_frame
 from sqlalchemy.ext.asyncio import AsyncSession
 import time
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI()
 
@@ -31,7 +37,13 @@ violation_queue = None  # asyncio.Queue set at startup
 consumer_task = None
 main_loop = None
 
-MODEL_PATH = "../model/weights/best.pt"  # path in your repo
+# Model path - cross-platform compatible
+# First try from environment variable, then use relative path
+MODEL_PATH = os.getenv("MODEL_PATH")
+if not MODEL_PATH:
+    # Get the backend directory and construct path relative to it
+    backend_dir = Path(__file__).parent
+    MODEL_PATH = str(backend_dir.parent / "model" / "weights" / "best.pt")
 
 @app.on_event("startup")
 async def startup_event():
