@@ -66,27 +66,64 @@ export const Cameras = () => {
             <div key={camera.id} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow">
                 
                 {/* Kamera Önizleme Alanı */}
-                <div className="bg-gray-900 aspect-video flex items-center justify-center relative group">
-                    {/* Gradient Overlay */}
-                    <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-gray-900 opacity-50"></div>
-                    
-                    {/* Kamera İkonu */}
-                    <Camera className="w-12 h-12 text-gray-600 relative z-10 group-hover:scale-110 transition-transform duration-300" />
+                <div className="bg-gray-900 aspect-video flex items-center justify-center relative group overflow-hidden">
+                    {/* Canlı Stream Görüntüsü */}
+                    {camera.status === 'online' ? (
+                        <img 
+                            src={`http://127.0.0.1:8000/api/camera/${camera.id}/stream`}
+                            alt={`${camera.name} live feed`}
+                            className="w-full h-full object-contain"
+                            style={{ minHeight: '100%' }}
+                            onError={(e) => {
+                                console.error(`Stream error for camera ${camera.id}:`, e);
+                                // Stream yüklenemezse fallback göster
+                                const parent = e.target.parentElement;
+                                if (parent) {
+                                    e.target.style.display = 'none';
+                                    // Show placeholder
+                                    if (!parent.querySelector('.stream-placeholder')) {
+                                        const placeholder = document.createElement('div');
+                                        placeholder.className = 'stream-placeholder absolute inset-0 flex items-center justify-center';
+                                        placeholder.innerHTML = '<div class="text-white text-sm">Stream yükleniyor...</div>';
+                                        parent.appendChild(placeholder);
+                                    }
+                                }
+                            }}
+                            onLoad={(e) => {
+                                // Stream başarıyla yüklendi
+                                const parent = e.target.parentElement;
+                                if (parent) {
+                                    const placeholder = parent.querySelector('.stream-placeholder');
+                                    if (placeholder) {
+                                        placeholder.remove();
+                                    }
+                                }
+                            }}
+                        />
+                    ) : (
+                        <>
+                            {/* Gradient Overlay */}
+                            <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-gray-900 opacity-50"></div>
+                            
+                            {/* Kamera İkonu */}
+                            <Camera className="w-12 h-12 text-gray-600 relative z-10 group-hover:scale-110 transition-transform duration-300" />
+                        </>
+                    )}
                     
                     {/* Canlı/Offline Badge */}
                     {camera.status === 'online' ? (
-                        <div className="absolute top-3 left-3 bg-green-500/90 text-white px-2 py-1 rounded text-xs font-bold flex items-center backdrop-blur-sm">
+                        <div className="absolute top-3 left-3 bg-green-500/90 text-white px-2 py-1 rounded text-xs font-bold flex items-center backdrop-blur-sm z-20">
                         <div className="w-1.5 h-1.5 bg-white rounded-full mr-1.5 animate-pulse"></div>
                         LIVE
                         </div>
                     ) : (
-                        <div className="absolute top-3 left-3 bg-gray-500/90 text-white px-2 py-1 rounded text-xs font-bold backdrop-blur-sm">
+                        <div className="absolute top-3 left-3 bg-gray-500/90 text-white px-2 py-1 rounded text-xs font-bold backdrop-blur-sm z-20">
                         OFFLINE
                         </div>
                     )}
 
                     {/* Menü Butonu */}
-                    <button className="absolute top-2 right-2 p-1.5 bg-black/20 hover:bg-black/40 text-white rounded-full transition-colors opacity-0 group-hover:opacity-100">
+                    <button className="absolute top-2 right-2 p-1.5 bg-black/20 hover:bg-black/40 text-white rounded-full transition-colors opacity-0 group-hover:opacity-100 z-20">
                         <MoreVertical className="w-4 h-4" />
                     </button>
                 </div>

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Sequence, Computed
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -50,8 +50,8 @@ class User(Base):
 
 class Violation(Base):
     __tablename__ = "violations"
-    id = Column(Integer, primary_key=True, index=True)
-    tarih_saat = Column(DateTime(timezone=True), server_default=func.now())
-    ihlal_cesidi = Column(String)            # helmet, vest, both vb.
-    ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge
-    violation_id = Column(String, unique=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    tarih_saat = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # Otomatik kayıt zamanı - CURRENT_TIMESTAMP gibi çalışır
+    ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
+    ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
+    violation_id = Column(Integer, nullable=False)  # Worker ID olarak kullanılıyor (eski kodun mantığına uygun - manuel olarak set edilir)
