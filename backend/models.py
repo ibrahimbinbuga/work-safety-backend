@@ -3,6 +3,8 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
 
+# It is used to define the tables for the database
+
 # 1. Kameralar Tablosu
 class Camera(Base):
     __tablename__ = "cameras"

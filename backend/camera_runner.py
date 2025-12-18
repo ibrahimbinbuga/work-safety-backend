@@ -36,7 +36,9 @@ def get_model(model_path: str):
                 import traceback
                 traceback.print_exc()
                 print(f"[get_model] Trying fallback model: yolo11n.pt")
-                try:
+
+                
+                try:  # It is used to load the yolo11n.pt model if the model is not found in the workspace
                     _MODEL_CACHE[model_path] = YOLO("yolo11n.pt")
                     print(f"[get_model] Fallback model loaded successfully")
                 except Exception as e2:
@@ -175,11 +177,14 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
             print(f"[CameraRunner][Camera {camera_id}] Camera opened successfully")
             results = None
         frame_count = 0
+        # Violation check interval: check violations every 4 seconds
+        VIOLATION_CHECK_INTERVAL = 4.0  # seconds
+        last_violation_check_time = time.time()
         
         if use_model:
             # Use YOLO model with OpenCV frame capture - manual frame processing
             # This avoids fuse() issues that occur with model.track() or model.predict(stream=True)
-            print(f"[CameraRunner][Camera {camera_id}] Starting detection loop with model")
+            print(f"[CameraRunner][Camera {camera_id}] Starting detection loop with model (violation check interval: {VIOLATION_CHECK_INTERVAL}s)")
             consecutive_failures = 0
             while not stop_event.is_set():
                 ret, frame = cap.read()
@@ -271,30 +276,33 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
                     head_count = len([d for d in detections if d.get('class_id') == 2])
                     print(f"[CameraRunner][Camera {camera_id}] Frame {frame_count} - Persons: {person_count}, Helmets: {helmet_count}, Vests: {vest_count}, Heads: {head_count}, Total: {len(detections)}")
 
-                # Process detections through state controller
-                logs = state_controller.process_detections(detections)
-                if logs:
-                    for log_entry in logs:
-                        # If violations list is not empty, send to async queue for DB write
-                        violations = log_entry.get('violations', [])
-                        if violations:
-                            print(f"[CameraRunner][Camera {camera_id}] ⚠️ VIOLATION DETECTED! Worker {log_entry.get('worker_id')}: {violations}")
-                            payload = {
-                                'camera_id': camera_id,
-                                'camera_source': source,
-                                'worker_id': log_entry.get('worker_id'),
-                                'timestamp': log_entry.get('timestamp'),
-                                'violations': violations,
-                                'status': log_entry.get('status'),
-                                'changes': log_entry.get('changes'),
-                                'snapshot_path': None
-                            }
-                            # Put into asyncio queue in a thread-safe way
-                            try:
-                                loop.call_soon_threadsafe(violation_queue.put_nowait, payload)
-                                print(f"[CameraRunner][Camera {camera_id}] ✅ Violation sent to queue")
-                            except Exception as queue_error:
-                                print(f"[CameraRunner][Camera {camera_id}] ❌ Error sending violation to queue: {queue_error}")
+                # Process detections through state controller - only check violations every 4 seconds
+                current_time = time.time()
+                if current_time - last_violation_check_time >= VIOLATION_CHECK_INTERVAL:
+                    last_violation_check_time = current_time
+                    logs = state_controller.process_detections(detections)
+                    if logs:
+                        for log_entry in logs:
+                            # If violations list is not empty, send to async queue for DB write
+                            violations = log_entry.get('violations', [])
+                            if violations:
+                                print(f"[CameraRunner][Camera {camera_id}] ⚠️ VIOLATION DETECTED! Worker {log_entry.get('worker_id')}: {violations}")
+                                payload = {
+                                    'camera_id': camera_id,
+                                    'camera_source': source,
+                                    'worker_id': log_entry.get('worker_id'),
+                                    'timestamp': log_entry.get('timestamp'),
+                                    'violations': violations,
+                                    'status': log_entry.get('status'),
+                                    'changes': log_entry.get('changes'),
+                                    'snapshot_path': None
+                                }
+                                # Put into asyncio queue in a thread-safe way
+                                try:
+                                    loop.call_soon_threadsafe(violation_queue.put_nowait, payload)
+                                    print(f"[CameraRunner][Camera {camera_id}] ✅ Violation sent to queue")
+                                except Exception as queue_error:
+                                    print(f"[CameraRunner][Camera {camera_id}] ❌ Error sending violation to queue: {queue_error}")
                 
                 time.sleep(0.033)  # ~30 FPS
             

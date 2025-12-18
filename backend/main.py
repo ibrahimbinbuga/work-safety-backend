@@ -45,11 +45,11 @@ if not MODEL_PATH:
     backend_dir = Path(__file__).parent
     MODEL_PATH = str(backend_dir.parent / "model" / "weights" / "best.pt")
 
-@app.on_event("startup")
+@app.on_event("startup") # It is first function that is called when the application starts with FastAPI
 async def startup_event():
     global violation_queue, consumer_task, main_loop
     print("[startup] Creating DB tables...")
-    async with engine.begin() as conn:
+    async with engine.begin() as conn:  # It is used to create the tables in the database if they don't exist
         await conn.run_sync(Base.metadata.create_all)
 
     # create queue and start consumer task
@@ -60,7 +60,7 @@ async def startup_event():
 
     # load cameras from DB and start threads
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(models.Camera))
+        result = await session.execute(select(models.Camera))  # In models.py, we have defined the Camera class and the select statement is used to select the cameras from the database
         cameras = result.scalars().all()
         print(f"[startup] Found {len(cameras)} cameras in database")
         if not cameras:
@@ -76,24 +76,24 @@ async def startup_event():
     # Start a thread per camera that is online
     print(f"[startup] Checking cameras for startup...")
     online_count = 0
-    for cam in cameras:
+    for cam in cameras: 
         print(f"[startup] Camera {cam.id}: name={cam.name}, status={cam.status}, rtsp_url={cam.rtsp_url}")
         if cam.status == "online":
             print(f"[startup] Starting camera thread for camera {cam.id}...")
-            start_camera_thread(cam.id, cam.rtsp_url)
+            start_camera_thread(cam.id, cam.rtsp_url)  # It is used to start the camera thread for each camera using the start_camera_thread function
             online_count += 1
         else:
             print(f"[startup] Skipping camera {cam.id} (status: {cam.status})")
     print(f"[startup] Started {online_count} camera thread(s)")
 
-@app.on_event("shutdown")
+@app.on_event("shutdown") # It is the second function that is called when the application shuts down with FastAPI
 async def shutdown_event():
     # stop camera threads
-    for cam_id, info in list(camera_threads.items()):
+    for cam_id, info in list(camera_threads.items()): # It is used to stop the camera threads for each camera using the stop_camera_thread function
         print(f"[shutdown] stopping camera {cam_id}")
         info['stop_event'].set()
         info['thread'].join(timeout=5.0)
-    # stop consumer
+    # stop consumer+
     global consumer_task
     if consumer_task:
         consumer_task.cancel()
@@ -105,15 +105,15 @@ async def shutdown_event():
 
 def start_camera_thread(camera_id: int, rtsp_url: str):
     """Start a blocking camera loop in a separate thread."""
-    if camera_id in camera_threads:
+    if camera_id in camera_threads:  # It is used to check if the camera thread is already running
         print(f"[start_camera_thread] Camera {camera_id} already running")
         return
     
-    if main_loop is None:
+    if main_loop is None:  # It is used to check if the main loop is already running
         print(f"[start_camera_thread] ERROR: main_loop is None, cannot start camera {camera_id}")
         return
     
-    if violation_queue is None:
+    if violation_queue is None:  # It is used to check if the violation queue is already running
         print(f"[start_camera_thread] ERROR: violation_queue is None, cannot start camera {camera_id}")
         return
     
@@ -164,7 +164,7 @@ async def save_violation_async(payload: dict):
                     continue
                 
                 # Create Detection record
-                det = models.Detection(
+                det = models.Detection(  # In models.py, we have defined the Detection class and the add method is used to add the detection to the database
                     camera_id=payload.get('camera_id'),
                     detection_type=v,
                     confidence=None,
@@ -183,7 +183,7 @@ async def save_violation_async(payload: dict):
                 
                 violation_area = str(payload.get('camera_id')) if payload.get('camera_id') is not None else None  # ihlal_yapilan_bolge (optional, can be None)
                 
-                vio = models.Violation(
+                vio = models.Violation(  # In models.py, we have defined the Violation class and the add method is used to add the violation to the database
                     ihlal_cesidi=v,  # violation_type: 'head' or 'vest'
                     ihlal_yapilan_bolge=violation_area,  # violation_area: optional area where violation occurred
                     violation_id=int(worker_id)  # violation_id: The worker/violation ID (int, required - eski kodun mantığına uygun)
