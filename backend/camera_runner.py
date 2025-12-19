@@ -63,7 +63,7 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
     if rtsp_url == "0":
         source = 0
 
-    print(f"[CameraRunner] Starting camera {camera_id} -> {source}")
+    print(f"[CameraRunner] Starting camera {camera_id} -> {source} (model: {model_path})")
     
     # Try to load model, if fails, continue without model (just show camera feed)
     try:
@@ -135,7 +135,6 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
                     print(f"[CameraRunner][Camera {camera_id}] No working camera found, exiting thread")
                     use_model = False
                     return
-            
             print(f"[CameraRunner][Camera {camera_id}] Camera opened, starting detection loop")
             # We'll process frames manually in the loop below
             results = None
@@ -189,11 +188,15 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
             while not stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret:
+                    if frame_count == 0:
+                        print(f"[CameraRunner][Camera {camera_id}] ERROR: No frame received from camera!")
                     consecutive_failures += 1
                     if consecutive_failures % 30 == 0:
                         print(f"[CameraRunner][Camera {camera_id}] Failed to read frame (consecutive: {consecutive_failures})")
                     time.sleep(0.1)
                     continue
+                if frame_count == 0:
+                    print(f"[CameraRunner][Camera {camera_id}] First frame received successfully!")
                 
                 consecutive_failures = 0
                 frame_count += 1
@@ -315,11 +318,15 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
             while not stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret:
+                    if frame_count == 0:
+                        print(f"[CameraRunner][Camera {camera_id}] ERROR: No frame received from camera (no model)!")
                     consecutive_failures += 1
                     if consecutive_failures % 30 == 0:  # Log every 30 failures
                         print(f"[CameraRunner][Camera {camera_id}] Failed to read frame (consecutive failures: {consecutive_failures})")
                     time.sleep(0.1)
                     continue
+                if frame_count == 0:
+                    print(f"[CameraRunner][Camera {camera_id}] First frame received successfully! (no model)")
                 
                 consecutive_failures = 0
                 frame_count += 1

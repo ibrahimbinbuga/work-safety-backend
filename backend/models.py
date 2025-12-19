@@ -57,3 +57,13 @@ class Violation(Base):
     ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
     ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
     violation_id = Column(Integer, nullable=False)  # Worker ID olarak kullanılıyor (eski kodun mantığına uygun - manuel olarak set edilir)
+
+# 5. Model Meta Verileri Tablosu
+class ModelMeta(Base):
+    __tablename__ = "models"
+    id = Column(Integer, primary_key=True, index=True)
+    path = Column(String, unique=True, nullable=False)
+    version = Column(String, nullable=False)
+    description = Column(String)
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, default=False)
