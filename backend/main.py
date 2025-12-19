@@ -1,4 +1,7 @@
 # backend/main.py
+import json
+import base64
+import shutil
 import asyncio
 import threading
 import uuid
@@ -6,7 +9,7 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -16,6 +19,7 @@ from camera_runner import run_camera_thread, get_latest_frame
 from sqlalchemy.ext.asyncio import AsyncSession
 import time
 from dotenv import load_dotenv
+from ultralytics import YOLO
 
 # Load environment variables
 load_dotenv()
@@ -37,13 +41,32 @@ violation_queue = None  # asyncio.Queue set at startup
 consumer_task = None
 main_loop = None
 
-# Model path - cross-platform compatible
-# First try from environment variable, then use relative path
-MODEL_PATH = os.getenv("MODEL_PATH")
-if not MODEL_PATH:
-    # Get the backend directory and construct path relative to it
-    backend_dir = Path(__file__).parent
-    MODEL_PATH = str(backend_dir.parent / "model" / "weights" / "best.pt")
+# Model path logic
+backend_dir = Path(__file__).parent
+weights_dir = backend_dir.parent / "model" / "weights"
+config_file = weights_dir / "active_model.txt"
+
+def get_initial_model_path():
+    # 1. Env var
+    env_path = os.getenv("MODEL_PATH")
+    if env_path:
+        return env_path
+    
+    # 2. Config file
+    if config_file.exists():
+        try:
+            with open(config_file, "r") as f:
+                saved_name = f.read().strip()
+                saved_path = weights_dir / saved_name
+                if saved_path.exists():
+                    return str(saved_path)
+        except Exception:
+            pass
+
+    # 3. Default fallback
+    return str(weights_dir / "best.pt")
+
+MODEL_PATH = get_initial_model_path()
 
 @app.on_event("startup") # It is first function that is called when the application starts with FastAPI
 async def startup_event():
@@ -220,6 +243,236 @@ async def get_violations(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(models.Violation).order_by(models.Violation.tarih_saat.desc()))
     violations = result.scalars().all()
     return violations
+
+@app.post("/api/model/upload")
+async def upload_model(
+    file: UploadFile = File(...),
+    version: str = Form(...),
+    description: str = Form(None),
+    accuracy: float = Form(0.0),
+    helmet_precision: float = Form(0.0),
+    vest_precision: float = Form(0.0),
+    worker_recall: float = Form(0.0)
+):
+    try:
+        # Ensure directory exists
+        backend_dir = Path(__file__).parent
+        weights_dir = backend_dir.parent / "model" / "weights"
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        
+        file_path = weights_dir / file.filename
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # Save metadata
+        metadata = {
+            "version": version,
+            "description": description,
+            "metrics": {
+                "accuracy": accuracy,
+                "helmet_precision": helmet_precision,
+                "vest_precision": vest_precision,
+                "worker_recall": worker_recall
+            },
+            "upload_date": time.time()
+        }
+        
+        meta_path = weights_dir / f"{file.filename}.json"
+        with open(meta_path, "w") as f:
+            json.dump(metadata, f)
+            
+        print(f"[upload] Model saved to {file_path} with metadata")
+        return {"status": "success", "filename": file.filename, "path": str(file_path)}
+    except Exception as e:
+        print(f"[upload] Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/model/current")
+async def get_current_model():
+    """Get information about the currently active model."""
+    path = Path(MODEL_PATH)
+    exists = path.exists()
+    
+    # Default metrics
+    metrics = {
+        "accuracy": 0,
+        "helmet_precision": 0,
+        "vest_precision": 0,
+        "worker_recall": 0
+    }
+    version_label = path.stem
+    
+    if exists:
+        # Try to load metadata
+        meta_path = path.parent / f"{path.name}.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r") as f:
+                    data = json.load(f)
+                    if "metrics" in data:
+                        metrics = data["metrics"]
+                    if "version" in data:
+                        version_label = data["version"]
+            except Exception as e:
+                print(f"Error reading metadata: {e}")
+
+    return {
+        "version": version_label,
+        "filename": path.name,
+        "path": str(path),
+        "size_mb": round(path.stat().st_size / (1024 * 1024), 2) if exists else 0,
+        "status": "active" if exists else "missing",
+        "last_modified": time.ctime(path.stat().st_mtime) if exists else None,
+        "metrics": metrics
+    }
+
+@app.get("/api/model/history")
+async def get_model_history():
+    """List all model files in the weights directory."""
+    backend_dir = Path(__file__).parent
+    weights_dir = backend_dir.parent / "model" / "weights"
+    history = []
+    
+    if weights_dir.exists():
+        current_resolve = Path(MODEL_PATH).resolve() if Path(MODEL_PATH).exists() else None
+        
+        for f in weights_dir.glob("*.pt"):
+            is_active = False
+            if current_resolve and f.resolve() == current_resolve:
+                is_active = True
+                
+            # Read metadata
+            meta_path = f.parent / f"{f.name}.json"
+            accuracy = 0
+            version_label = f.stem
+            
+            if meta_path.exists():
+                try:
+                    with open(meta_path, "r") as jf:
+                        data = json.load(jf)
+                        metrics = data.get("metrics", {})
+                        accuracy = metrics.get("accuracy", 0)
+                        if "version" in data:
+                            version_label = data["version"]
+                except:
+                    pass
+
+            history.append({
+                "version": version_label,
+                "filename": f.name,
+                "date": time.strftime("%Y-%m-%d", time.localtime(f.stat().st_mtime)),
+                "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
+                "status": "active" if is_active else "archived",
+                "accuracy": accuracy,
+                "detections": 0 # Placeholder
+            })
+    
+    # Sort by date desc
+    history.sort(key=lambda x: x['date'], reverse=True)
+    return history
+
+@app.delete("/api/model/{filename}")
+async def delete_model(filename: str):
+    """Delete a model file if it is not currently active."""
+    target_path = weights_dir / filename
+    
+    # Don't delete if it's the active model
+    if str(target_path.resolve()) == str(Path(MODEL_PATH).resolve()):
+        return {"status": "error", "message": "Cannot delete the currently active model"}
+        
+    if not target_path.exists():
+        return {"status": "error", "message": "File not found"}
+        
+    try:
+        os.remove(target_path)
+        return {"status": "success", "filename": filename}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/model/test")
+async def test_model_inference(file: UploadFile = File(...)):
+    """Run inference on a single uploaded image for testing."""
+    temp_path = f"temp_{uuid.uuid4()}.jpg"
+    try:
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        model = YOLO(MODEL_PATH)
+        results = model(temp_path)
+        
+        # Count detections by class name
+        summary = {}
+        total_conf = 0
+        count = 0
+        
+        for r in results:
+            for box in r.boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                name = model.names[cls_id]
+                
+                summary[name] = summary.get(name, 0) + 1
+                total_conf += conf
+                count += 1
+                
+        avg_conf = (total_conf / count * 100) if count > 0 else 0
+
+        # Generate visualization (draw boxes)
+        im_array = results[0].plot() # Returns BGR numpy array
+        _, img_encoded = cv2.imencode('.jpg', im_array)
+        img_base64 = base64.b64encode(img_encoded).decode('utf-8')
+        
+        return {
+            "success": True,
+            "summary": summary,
+            "confidence": round(avg_conf, 1),
+            "image_base64": f"data:image/jpeg;base64,{img_base64}"
+        }
+    except Exception as e:
+        print(f"Inference error: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.post("/api/model/activate")
+async def activate_model(filename: str = Form(...)):
+    global MODEL_PATH
+    
+    target_path = weights_dir / filename
+    if not target_path.exists():
+        return {"status": "error", "message": "Model file not found"}
+        
+    # Update config
+    try:
+        with open(config_file, "w") as f:
+            f.write(filename)
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to save config: {e}"}
+        
+    # Update global variable
+    MODEL_PATH = str(target_path)
+    print(f"[model] Switched active model to: {MODEL_PATH}")
+    
+    # Restart cameras to pick up new model
+    # 1. Stop all running threads
+    for cam_id, info in list(camera_threads.items()):
+        print(f"[model] Stopping camera {cam_id} for model update...")
+        info['stop_event'].set()
+        info['thread'].join(timeout=5.0)
+        del camera_threads[cam_id]
+        
+    # 2. Restart online cameras from DB
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(models.Camera))
+        cameras = result.scalars().all()
+        for cam in cameras:
+            if cam.status == "online":
+                print(f"[model] Restarting camera {cam.id}...")
+                start_camera_thread(cam.id, cam.rtsp_url)
+                
+    return {"status": "success", "active_model": filename, "path": MODEL_PATH}
 
 @app.post("/api/camera/{camera_id}/start-local")
 async def api_start_local_camera(camera_id: int):
