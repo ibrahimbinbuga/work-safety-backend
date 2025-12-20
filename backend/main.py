@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import time
 from dotenv import load_dotenv
 from typing import Optional
+import base64
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -416,4 +418,73 @@ async def startup_event():
     # Tüm tabloları oluştur (özellikle models tablosu için)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+# Detect endpoint'i ekleyin
+@app.post("/api/detect")
+async def detect(file: UploadFile = File(...), model_path: str = Form(...)):
+    """
+    Yüklenen resmi aktif model ile analiz et
+    """
+    try:
+        if not model_path or model_path == '':
+            return {
+                "status": "error",
+                "message": "Model yolu geçersiz. Lütfen bir model aktif edin."
+            }
+        
+        # Modeli yükle
+        from ultralytics import YOLO
+        
+        model_full_path = model_path
+        if not Path(model_full_path).exists():
+            return {
+                "status": "error",
+                "message": f"Model dosyası bulunamadı: {model_full_path}"
+            }
+        
+        # Resim dosyasını oku
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return {
+                "status": "error",
+                "message": "Resim dosyası okunamadı. Lütfen geçerli bir resim seçin."
+            }
+        
+        # YOLO modelini yükle ve çalıştır
+        model = YOLO(model_full_path)
+        results = model(img)
+        
+        # Sonuçları işle
+        detections = []
+        for r in results:
+            for box in r.boxes:
+                detections.append({
+                    "class": model.names[int(box.cls)],
+                    "confidence": float(box.conf),
+                    "bbox": box.xyxy[0].tolist()
+                })
+        
+        # Annotated image'ı oluştur
+        annotated_img = results[0].plot()
+        _, buffer = cv2.imencode('.jpg', annotated_img)
+        image_base64 = base64.b64encode(buffer).decode()
+        
+        return {
+            "status": "success",
+            "detections": len(detections),
+            "objects": detections,
+            "image_base64": image_base64,
+            "processing_time": results[0].speed.get('inference', 0)
+        }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": f"Detection hatası: {str(e)}"
+        }
 

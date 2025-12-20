@@ -16,6 +16,22 @@ export function ModelManagement() {
   const [selectedImage, setSelectedImage] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [detectionResults, setDetectionResults] = useState(null);
+  const [detectionError, setDetectionError] = useState(null);
+  
+  // Metrikleri yönetmek için yeni state'ler
+  const [metricsFile, setMetricsFile] = useState(null);
+  const [accuracyStats, setAccuracyStats] = useState([
+    { label: 'Overall Accuracy', value: 0, color: 'bg-blue-600' },
+    { label: 'Helmet Detection', value: 0, color: 'bg-green-500' },
+    { label: 'Vest Detection', value: 0, color: 'bg-orange-500' },
+    { label: 'Worker Detection', value: 0, color: 'bg-purple-500' },
+  ]);
+  const [modelStats, setModelStats] = useState({
+    inferenceTime: '0ms',
+    totalDetections: 0,
+  });
+  const metricsFileInputRef = useRef();
 
   // Aktif model bilgisini backend'den çek
   useEffect(() => {
@@ -151,18 +167,61 @@ export function ModelManagement() {
       reader.onload = (event) => {
         setSelectedImage(event.target?.result);
         setShowResults(false);
+        setDetectionResults(null);
+        setDetectionError(null);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  // Test detection simülasyonu
-  const handleRunDetection = () => {
+  // Test detection - backend'e istek gönder
+  const handleRunDetection = async () => {
+    if (!selectedImage || !activeModelPath) {
+      alert('Lütfen resim seçin ve bir model aktif edin.');
+      return;
+    }
+
     setIsAnalyzing(true);
-    setTimeout(() => {
-      setIsAnalyzing(false);
-      setShowResults(true);
-    }, 1500);
+    setDetectionError(null);
+    setDetectionResults(null);
+
+    try {
+      // Data URL'i blob'a çevir
+      const response = await fetch(selectedImage);
+      const blob = await response.blob();
+      
+      const formData = new FormData();
+      formData.append('file', blob, 'image.jpg');
+      formData.append('model_path', activeModelPath);
+
+      console.log('Sending detection request to backend...');
+      
+      const res = await fetch('http://localhost:8000/api/detect', {
+        method: 'POST',
+        body: formData,
+      });
+
+      console.log('Response status:', res.status);
+      const data = await res.json();
+      console.log('Response data:', data);
+      
+      if (!res.ok) {
+        throw new Error(data.message || data.detail || `HTTP Error: ${res.status}`);
+      }
+      
+      if (data.status === 'success') {
+        setDetectionResults(data);
+        setShowResults(true);
+      } else {
+        setDetectionError(data.message || 'Detection başarısız oldu');
+      }
+    } catch (err) {
+      const errorMsg = err.message || 'Bilinmeyen bir hata oluştu';
+      setDetectionError('Detection sırasında bir hata oluştu: ' + errorMsg);
+      console.error('Detection error:', err);
+    }
+    
+    setIsAnalyzing(false);
   };
 
   // Aktif modelden isim ve versiyon çıkarımı
@@ -171,13 +230,79 @@ export function ModelManagement() {
   let modelVersionStr = activeModelMeta?.version || '';
   let modelPathStr = activeModelMeta?.path || '';
 
+  // Metrikleri JSON dosyasından yükle
+  const handleMetricsFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const jsonData = JSON.parse(event.target?.result);
+          setMetricsFile(file);
+          updateMetricsFromJSON(jsonData);
+          alert('Metrikleri başarıyla yüklendi.');
+        } catch (err) {
+          alert('JSON dosyası hatalı. Lütfen geçerli bir JSON dosyası seçin.');
+          setMetricsFile(null);
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  // JSON'dan metrikleri güncelle
+  const updateMetricsFromJSON = (jsonData) => {
+    try {
+      // JSON yapısı örneği:
+      // {
+      //   "overall_accuracy": 96.8,
+      //   "helmet_detection": 98.2,
+      //   "vest_detection": 95.4,
+      //   "worker_detection": 97.6,
+      //   "inference_time_ms": 23,
+      //   "total_detections": 45230
+      // }
+      
+      const newStats = [
+        { 
+          label: 'Overall Accuracy', 
+          value: jsonData.overall_accuracy || 0, 
+          color: 'bg-blue-600' 
+        },
+        { 
+          label: 'Helmet Detection', 
+          value: jsonData.helmet_detection || 0, 
+          color: 'bg-green-500' 
+        },
+        { 
+          label: 'Vest Detection', 
+          value: jsonData.vest_detection || 0, 
+          color: 'bg-orange-500' 
+        },
+        { 
+          label: 'Worker Detection', 
+          value: jsonData.worker_detection || 0, 
+          color: 'bg-purple-500' 
+        },
+      ];
+      
+      setAccuracyStats(newStats);
+      setModelStats({
+        inferenceTime: `${jsonData.inference_time_ms || 0}ms`,
+        totalDetections: jsonData.total_detections || 0,
+      });
+    } catch (err) {
+      alert('JSON metrikleri işlenirken hata: ' + err.message);
+    }
+  };
+
   // Demo accuracy değerleri
-  const accuracyStats = [
-    { label: 'Overall Accuracy', value: 96.8, color: 'bg-blue-600' },
-    { label: 'Helmet Detection', value: 98.2, color: 'bg-green-500' },
-    { label: 'Vest Detection', value: 95.4, color: 'bg-orange-500' },
-    { label: 'Worker Detection', value: 97.6, color: 'bg-purple-500' },
-  ];
+  // const accuracyStats = [
+  //   { label: 'Overall Accuracy', value: 96.8, color: 'bg-blue-600' },
+  //   { label: 'Helmet Detection', value: 98.2, color: 'bg-green-500' },
+  //   { label: 'Vest Detection', value: 95.4, color: 'bg-orange-500' },
+  //   { label: 'Worker Detection', value: 97.6, color: 'bg-purple-500' },
+  // ];
 
   return (
     <div className="space-y-6 p-6">
@@ -227,6 +352,26 @@ export function ModelManagement() {
                 rows={2}
                 value={modelDesc}
                 onChange={e => setModelDesc(e.target.value)}
+              />
+            </div>
+            {/* Metrikleri JSON dosyasından yükle */}
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center">
+              <p className="text-gray-900 mb-2 text-sm font-medium">
+                {metricsFile ? metricsFile.name : 'Drop metrics JSON here'}
+              </p>
+              <button
+                className="border border-gray-300 bg-white px-3 py-1.5 rounded text-xs font-medium"
+                type="button"
+                onClick={() => metricsFileInputRef.current && metricsFileInputRef.current.click()}
+              >
+                Upload Metrics
+              </button>
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                ref={metricsFileInputRef}
+                onChange={handleMetricsFileChange}
               />
             </div>
             <button
@@ -303,12 +448,12 @@ export function ModelManagement() {
                   <div key={idx}>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-gray-700 text-sm font-medium">{item.label}</span>
-                      <span className="text-gray-900 font-bold">{item.value}%</span>
+                      <span className="text-gray-900 font-bold">{item.value.toFixed(1)}%</span>
                     </div>
                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full ${item.color}`}
-                        style={{ width: `${item.value}%` }}
+                        style={{ width: `${Math.min(item.value, 100)}%` }}
                       ></div>
                     </div>
                   </div>
@@ -317,11 +462,11 @@ export function ModelManagement() {
               <div className="grid grid-cols-2 gap-4 pt-6 border-t border-gray-100 mt-6">
                 <div>
                   <p className="text-gray-500 text-xs font-medium mb-1 uppercase tracking-wider">Inference Time</p>
-                  <p className="text-gray-900 text-xl font-bold">23ms <span className="text-sm font-normal text-gray-500">avg</span></p>
+                  <p className="text-gray-900 text-xl font-bold">{modelStats.inferenceTime} <span className="text-sm font-normal text-gray-500">avg</span></p>
                 </div>
                 <div>
                   <p className="text-gray-500 text-xs font-medium mb-1 uppercase tracking-wider">Total Detections</p>
-                  <p className="text-gray-900 text-xl font-bold">45,230</p>
+                  <p className="text-gray-900 text-xl font-bold">{modelStats.totalDetections.toLocaleString()}</p>
                 </div>
               </div>
             </>
@@ -371,12 +516,64 @@ export function ModelManagement() {
           </div>
           <div className="flex-1 bg-gray-50 rounded-xl p-6 border border-gray-100">
             <h4 className="text-gray-900 font-semibold mb-4">Detection Results</h4>
-            {showResults ? (
-              <div>
-                <div className="mb-2">Detection completed. (Demo)</div>
+            {detectionError ? (
+              <div className="text-red-600 text-sm">{detectionError}</div>
+            ) : showResults && detectionResults ? (
+              <div className="space-y-4">
+                <div className="bg-white p-4 rounded-lg border border-gray-200">
+                  <p className="text-sm text-gray-600 mb-2">
+                    <span className="font-semibold">Status:</span> {detectionResults.status}
+                  </p>
+                  <p className="text-sm text-gray-600 mb-2">
+                    <span className="font-semibold">Detections:</span> {detectionResults.detections || 0}
+                  </p>
+                  {detectionResults.processing_time && (
+                    <p className="text-sm text-gray-600">
+                      <span className="font-semibold">Processing Time:</span> {detectionResults.processing_time.toFixed(2)}ms
+                    </p>
+                  )}
+                </div>
+                
+                {detectionResults.objects && detectionResults.objects.length > 0 && (
+                  <div className="bg-white p-4 rounded-lg border border-gray-200">
+                    <p className="font-semibold text-sm mb-3">Detected Objects:</p>
+                    <div className="space-y-2">
+                      {detectionResults.objects.map((obj, idx) => (
+                        <div key={idx} className="text-sm bg-gray-50 p-2 rounded">
+                          <p><span className="font-medium">{obj.class || 'Object'}:</span> {(obj.confidence * 100).toFixed(1)}% confidence</p>
+                          {obj.bbox && (
+                            <p className="text-xs text-gray-500">
+                              Position: ({obj.bbox[0]?.toFixed(0)}, {obj.bbox[1]?.toFixed(0)})
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {detectionResults.image_base64 && (
+                  <div className="bg-white p-4 rounded-lg border border-gray-200">
+                    <p className="font-semibold text-sm mb-3">Annotated Image:</p>
+                    <img 
+                      src={`data:image/jpeg;base64,${detectionResults.image_base64}`} 
+                      alt="Detected" 
+                      className="w-full rounded"
+                    />
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="text-center py-20 text-gray-400">Upload an image and run detection to see results</div>
+              <div className="text-center py-20 text-gray-400">
+                {isAnalyzing ? (
+                  <div>
+                    <div className="animate-spin inline-block w-6 h-6 border-3 border-gray-300 border-t-blue-600 rounded-full mb-3"></div>
+                    <p>Analyzing...</p>
+                  </div>
+                ) : (
+                  'Upload an image and run detection to see results'
+                )}
+              </div>
             )}
           </div>
         </div>
