@@ -6,16 +6,19 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from database import engine, Base, AsyncSessionLocal, get_db
 import models
-from camera_runner import run_camera_thread, get_latest_frame
+from camera_runner import run_camera_thread, get_latest_frame, preload_model_async
 from sqlalchemy.ext.asyncio import AsyncSession
 import time
 from dotenv import load_dotenv
+from typing import Optional
+import base64
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -45,66 +48,50 @@ if not MODEL_PATH:
     backend_dir = Path(__file__).parent
     MODEL_PATH = str(backend_dir.parent / "model" / "weights" / "best.pt")
 
-@app.on_event("startup") # It is first function that is called when the application starts with FastAPI
-async def startup_event():
-    global violation_queue, consumer_task, main_loop
-    print("[startup] Creating DB tables...")
-    async with engine.begin() as conn:  # It is used to create the tables in the database if they don't exist
-        await conn.run_sync(Base.metadata.create_all)
+# Aktif model yolunu yönetmek için global değişken
+ACTIVE_MODEL_PATH = MODEL_PATH
 
-    # create queue and start consumer task
-    main_loop = asyncio.get_running_loop()
-    violation_queue = asyncio.Queue()
-
-    consumer_task = asyncio.create_task(violation_consumer_task(violation_queue))
-
-    # load cameras from DB and start threads
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(models.Camera))  # In models.py, we have defined the Camera class and the select statement is used to select the cameras from the database
-        cameras = result.scalars().all()
-        print(f"[startup] Found {len(cameras)} cameras in database")
-        if not cameras:
-            # insert sample cameras if none exist
-            print("[startup] No cameras found, creating sample cameras...")
-            cam1 = models.Camera(name="Warehouse A - Entry", location="Zone 1", rtsp_url="0", status="online")
-            cam2 = models.Camera(name="Loading Dock", location="Zone 2", rtsp_url="", status="offline")
-            session.add_all([cam1, cam2])
-            await session.commit()
-            cameras = [cam1, cam2]
-            print(f"[startup] Created {len(cameras)} sample cameras")
-
-    # Start a thread per camera that is online
-    print(f"[startup] Checking cameras for startup...")
-    online_count = 0
-    for cam in cameras: 
-        print(f"[startup] Camera {cam.id}: name={cam.name}, status={cam.status}, rtsp_url={cam.rtsp_url}")
-        if cam.status == "online":
-            print(f"[startup] Starting camera thread for camera {cam.id}...")
-            start_camera_thread(cam.id, cam.rtsp_url)  # It is used to start the camera thread for each camera using the start_camera_thread function
-            online_count += 1
+def set_active_model_path(path: str):
+    """
+    Aktif model yolunu günceller. Boş path verilirse devre dışı bırakır.
+    Yeni model aktif yapıldığında arka planda ön-yükleme yapılır.
+    """
+    global ACTIVE_MODEL_PATH
+    if not path:
+        ACTIVE_MODEL_PATH = None
+        print(f"[model] ❌ Aktif model devre dışı bırakıldı.")
+    else:
+        ACTIVE_MODEL_PATH = path
+        print(f"[model] ✅ Aktif model yolu güncellendi: {ACTIVE_MODEL_PATH}")
+        
+        # 📌 Yeni modeli arka planda ön-yükle (kamera thread'lerini bloke etmez)
+        if Path(path).exists():
+            print(f"[model] 🚀 Model arka planda ön-yükleniyor: {path}")
+            preload_model_async(path)
         else:
-            print(f"[startup] Skipping camera {cam.id} (status: {cam.status})")
-    print(f"[startup] Started {online_count} camera thread(s)")
+            print(f"[model] ⚠️ Model dosyası bulunamadı: {path}")
 
-@app.on_event("shutdown") # It is the second function that is called when the application shuts down with FastAPI
-async def shutdown_event():
-    # stop camera threads
-    for cam_id, info in list(camera_threads.items()): # It is used to stop the camera threads for each camera using the stop_camera_thread function
-        print(f"[shutdown] stopping camera {cam_id}")
-        info['stop_event'].set()
-        info['thread'].join(timeout=5.0)
-    # stop consumer+
-    global consumer_task
-    if consumer_task:
-        consumer_task.cancel()
-        try:
-            await consumer_task
-        except asyncio.CancelledError:
-            pass
-    print("[shutdown] Goodbye!")
+def get_active_model_path() -> str:
+    """
+    Aktif model yolunu döndürür.
+    """
+    return ACTIVE_MODEL_PATH
 
 def start_camera_thread(camera_id: int, rtsp_url: str):
     """Start a blocking camera loop in a separate thread."""
+    # 📌 Model yolunu al (arka planda yükleniyor olabilir)
+    model_path = get_active_model_path()
+    
+    # Eğer model yoksa, kullanıcı bilgilendir ama kamera yine de başlat
+    # (raw camera feed gösterecek, detection olmadan)
+    if not model_path:
+        print(f"[start_camera_thread] ⚠️ Model yoksa bile kamera başlatılıyor (raw feed): camera_id={camera_id}")
+        # Model yoksa bile devam et - kamera en az raw feed'i gösterecek
+    else:
+        if not Path(model_path).exists():
+            print(f"[start_camera_thread] ⚠️ Model dosyası bulunamadı: {model_path}")
+            print(f"[start_camera_thread] Kamera raw feed ile başlatılıyor (detection olmadan)")
+    
     if camera_id in camera_threads:  # It is used to check if the camera thread is already running
         print(f"[start_camera_thread] Camera {camera_id} already running")
         return
@@ -117,11 +104,11 @@ def start_camera_thread(camera_id: int, rtsp_url: str):
         print(f"[start_camera_thread] ERROR: violation_queue is None, cannot start camera {camera_id}")
         return
     
-    print(f"[start_camera_thread] Creating thread for camera {camera_id} with rtsp_url='{rtsp_url}'")
+    print(f"[start_camera_thread] Creating thread for camera {camera_id} with rtsp_url='{rtsp_url}' and model_path='{model_path}'")
     stop_event = threading.Event()
     thread = threading.Thread(
         target=run_camera_thread,
-        args=(camera_id, rtsp_url, MODEL_PATH, main_loop, violation_queue, stop_event),
+        args=(camera_id, rtsp_url, model_path, main_loop, violation_queue, stop_event),
         daemon=True
     )
     camera_threads[camera_id] = {'thread': thread, 'stop_event': stop_event}
@@ -229,6 +216,7 @@ async def api_start_local_camera(camera_id: int):
         if not cam:
             return {"error": "camera not found"}
         # Use "0" for local camera
+        print(f"[api_start_local_camera] Starting local camera for camera_id={camera_id}")
         start_camera_thread(cam.id, "0")
     return {"status": "started with local camera", "camera_id": camera_id}
 
@@ -318,3 +306,236 @@ async def stream_camera(camera_id: int):
         generate_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
+
+def modelmeta_to_dict(model):
+    """ModelMeta nesnesini dict'e çevirir (JSON serializable)."""
+    return {
+        "id": model.id,
+        "path": model.path,
+        "version": model.version,
+        "description": model.description,
+        "uploaded_at": model.uploaded_at.isoformat() if model.uploaded_at else "",
+        "is_active": model.is_active,
+    }
+
+@app.post("/api/model/upload")
+async def upload_model(
+    file: UploadFile = File(...),
+    version: str = Form(...),
+    description: Optional[str] = Form(None)
+):
+    """
+    Yeni bir model dosyasını yükler ve kaydeder.
+    """
+    allowed_ext = ('.pt', '.weights', '.onnx')
+    if not any(file.filename.endswith(ext) for ext in allowed_ext):
+        raise HTTPException(status_code=400, detail="Desteklenmeyen dosya uzantısı.")
+
+    try:
+        models_dir = Path(__file__).parent.parent / "model" / "weights"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{version}_{uuid.uuid4().hex}_{file.filename}"
+        file_path = models_dir / filename
+
+        # Dosya boyutu kontrolü (örnek: 200MB sınır)
+        MAX_SIZE = 200 * 1024 * 1024
+        content = await file.read()
+        if len(content) > MAX_SIZE:
+            raise HTTPException(status_code=413, detail="Model dosyası çok büyük (max 200MB).")
+
+        with open(file_path, "wb") as f:
+            f.write(content)
+        print(f"[model] Model dosyası yüklendi: {file_path}")
+
+        # DB'ye model meta verisini kaydet
+        async with AsyncSessionLocal() as session:
+            # Aynı path varsa ekleme!
+            existing = await session.execute(select(models.ModelMeta).where(models.ModelMeta.path == str(file_path)))
+            if existing.scalars().first():
+                raise HTTPException(status_code=409, detail="Bu path ile model zaten var.")
+            model_meta = models.ModelMeta(
+                path=str(file_path),
+                version=version,
+                description=description,
+                is_active=False
+            )
+            session.add(model_meta)
+            await session.commit()
+        return {"status": "success", "path": str(file_path), "version": version, "description": description}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[model] Model yükleme hatası: {e}")
+        raise HTTPException(status_code=500, detail=f"Model yükleme hatası: {str(e)}")
+
+@app.post("/api/model/activate")
+async def activate_model(path: str = Form(...)):
+    """
+    Yüklenen bir modeli aktif hale getirir veya devre dışı bırakır.
+    """
+    # Eğer path boşsa, aktif modeli devre dışı bırak
+    if not path:
+        set_active_model_path("")
+        # Tüm kamera thread'lerini durdur
+        for cam_id, info in list(camera_threads.items()):
+            print(f"[model] Kamerayı devre dışı bırak: {cam_id}")
+            info['stop_event'].set()
+            info['thread'].join(timeout=2.0)
+            del camera_threads[cam_id]
+        return {"status": "active", "model_path": None}
+
+    if not Path(path).exists():
+        raise HTTPException(status_code=404, detail="Model dosyası bulunamadı.")
+    set_active_model_path(path)
+    # Tüm çalışan kamera thread'lerini yeni model ile yeniden başlat
+    for cam_id, info in list(camera_threads.items()):
+        print(f"[model] Kamerayı yeni model ile yeniden başlat: {cam_id}")
+        info['stop_event'].set()
+        info['thread'].join(timeout=2.0)
+        del camera_threads[cam_id]
+        # Kamerayı yeni model ile başlat
+        # Kamera bilgisi DB'den alınır
+        async with AsyncSessionLocal() as session:
+            cam = await session.get(models.Camera, cam_id)
+            if cam and cam.status == "online":
+                start_camera_thread(cam.id, cam.rtsp_url)
+    
+    async with AsyncSessionLocal() as session:
+        # Tüm modelleri pasif yap
+        await session.execute(update(models.ModelMeta).values(is_active=False))
+        # Eğer path boş değilse, ilgili modeli aktif yap
+        if path:
+            await session.execute(update(models.ModelMeta).where(models.ModelMeta.path == path).values(is_active=True))
+        await session.commit()
+    return {"status": "active", "model_path": path}
+
+@app.get("/api/model/active")
+async def get_active_model():
+    """
+    Aktif model yolunu döndürür.
+    """
+    return {"active_model_path": get_active_model_path()}
+
+@app.get("/api/models")
+async def get_models():
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(models.ModelMeta).order_by(models.ModelMeta.uploaded_at.desc()))
+            models_list = result.scalars().all()
+            return [modelmeta_to_dict(m) for m in models_list]
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
+
+@app.on_event("startup")
+async def startup_event():
+    global main_loop, violation_queue, consumer_task
+    
+    # Tüm tabloları oluştur (özellikle models tablosu için)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    # AsyncIO loop'u global'e kaydet
+    main_loop = asyncio.get_event_loop()
+    
+    # Violation queue'yu oluştur
+    violation_queue = asyncio.Queue()
+    
+    # Consumer task'ı başlat
+    consumer_task = asyncio.create_task(violation_consumer_task(violation_queue))
+    
+    # 📌 Model'i arka planda ön-yükle (bloke etmez)
+    model_path = get_active_model_path()
+    if model_path and Path(model_path).exists():
+        print(f"[startup] 🚀 Modeli arka planda ön-yüklüyoruz: {model_path}")
+        preload_model_async(model_path)
+        print(f"[startup] ✅ Model ön-yükleme başlatıldı (kamera donmayacak)")
+    
+    # 📌 Tüm kameraları otomatik başlat
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(models.Camera))
+            cameras = result.scalars().all()
+            if cameras:
+                print(f"[startup] 📹 {len(cameras)} kamera bulundu, başlatılıyor...")
+                for cam in cameras:
+                    print(f"[startup] Starting camera: {cam.id} (name: {cam.name}, rtsp: {cam.rtsp_url})")
+                    # Non-blocking kamera başlatma (thread'de çalışacak)
+                    start_camera_thread(cam.id, cam.rtsp_url)
+            else:
+                print(f"[startup] ⚠️ Hiç kamera bulunamadı")
+    except Exception as e:
+        print(f"[startup] ❌ Kamera başlatma hatası: {e}")
+        import traceback
+        traceback.print_exc()
+
+# Detect endpoint'i ekleyin
+@app.post("/api/detect")
+async def detect(file: UploadFile = File(...), model_path: str = Form(...)):
+    """
+    Yüklenen resmi aktif model ile analiz et
+    """
+    try:
+        if not model_path or model_path == '':
+            return {
+                "status": "error",
+                "message": "Model yolu geçersiz. Lütfen bir model aktif edin."
+            }
+        
+        # Modeli yükle
+        from ultralytics import YOLO
+        
+        model_full_path = model_path
+        if not Path(model_full_path).exists():
+            return {
+                "status": "error",
+                "message": f"Model dosyası bulunamadı: {model_full_path}"
+            }
+        
+        # Resim dosyasını oku
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return {
+                "status": "error",
+                "message": "Resim dosyası okunamadı. Lütfen geçerli bir resim seçin."
+            }
+        
+        # YOLO modelini yükle ve çalıştır
+        model = YOLO(model_full_path)
+        results = model(img)
+        
+        # Sonuçları işle
+        detections = []
+        for r in results:
+            for box in r.boxes:
+                detections.append({
+                    "class": model.names[int(box.cls)],
+                    "confidence": float(box.conf),
+                    "bbox": box.xyxy[0].tolist()
+                })
+        
+        # Annotated image'ı oluştur
+        annotated_img = results[0].plot()
+        _, buffer = cv2.imencode('.jpg', annotated_img)
+        image_base64 = base64.b64encode(buffer).decode()
+        
+        return {
+            "status": "success",
+            "detections": len(detections),
+            "objects": detections,
+            "image_base64": image_base64,
+            "processing_time": results[0].speed.get('inference', 0)
+        }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": f"Detection hatası: {str(e)}"
+        }
+

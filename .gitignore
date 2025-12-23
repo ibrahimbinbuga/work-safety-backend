@@ -30,6 +30,19 @@ dist-ssr
 .venv
 model
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
 # Environment variables
 .env
 .env.local
