@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, update
 from database import engine, Base, AsyncSessionLocal, get_db
 import models
-from camera_runner import run_camera_thread, get_latest_frame
+from camera_runner import run_camera_thread, get_latest_frame, preload_model_async
 from sqlalchemy.ext.asyncio import AsyncSession
 import time
 from dotenv import load_dotenv
@@ -54,14 +54,22 @@ ACTIVE_MODEL_PATH = MODEL_PATH
 def set_active_model_path(path: str):
     """
     Aktif model yolunu günceller. Boş path verilirse devre dışı bırakır.
+    Yeni model aktif yapıldığında arka planda ön-yükleme yapılır.
     """
     global ACTIVE_MODEL_PATH
     if not path:
         ACTIVE_MODEL_PATH = None
-        print(f"[model] Aktif model devre dışı bırakıldı.")
+        print(f"[model] ❌ Aktif model devre dışı bırakıldı.")
     else:
         ACTIVE_MODEL_PATH = path
-        print(f"[model] Aktif model yolu güncellendi: {ACTIVE_MODEL_PATH}")
+        print(f"[model] ✅ Aktif model yolu güncellendi: {ACTIVE_MODEL_PATH}")
+        
+        # 📌 Yeni modeli arka planda ön-yükle (kamera thread'lerini bloke etmez)
+        if Path(path).exists():
+            print(f"[model] 🚀 Model arka planda ön-yükleniyor: {path}")
+            preload_model_async(path)
+        else:
+            print(f"[model] ⚠️ Model dosyası bulunamadı: {path}")
 
 def get_active_model_path() -> str:
     """
@@ -71,11 +79,18 @@ def get_active_model_path() -> str:
 
 def start_camera_thread(camera_id: int, rtsp_url: str):
     """Start a blocking camera loop in a separate thread."""
-    # Aktif model yoksa kamera başlatılmaz!
+    # 📌 Model yolunu al (arka planda yükleniyor olabilir)
     model_path = get_active_model_path()
-    if not model_path or not Path(model_path).exists():
-        print(f"[start_camera_thread] Aktif model yok, kamera başlatılmıyor! (camera_id={camera_id})")
-        return
+    
+    # Eğer model yoksa, kullanıcı bilgilendir ama kamera yine de başlat
+    # (raw camera feed gösterecek, detection olmadan)
+    if not model_path:
+        print(f"[start_camera_thread] ⚠️ Model yoksa bile kamera başlatılıyor (raw feed): camera_id={camera_id}")
+        # Model yoksa bile devam et - kamera en az raw feed'i gösterecek
+    else:
+        if not Path(model_path).exists():
+            print(f"[start_camera_thread] ⚠️ Model dosyası bulunamadı: {model_path}")
+            print(f"[start_camera_thread] Kamera raw feed ile başlatılıyor (detection olmadan)")
     
     if camera_id in camera_threads:  # It is used to check if the camera thread is already running
         print(f"[start_camera_thread] Camera {camera_id} already running")
@@ -415,9 +430,45 @@ async def get_models():
 
 @app.on_event("startup")
 async def startup_event():
+    global main_loop, violation_queue, consumer_task
+    
     # Tüm tabloları oluştur (özellikle models tablosu için)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    
+    # AsyncIO loop'u global'e kaydet
+    main_loop = asyncio.get_event_loop()
+    
+    # Violation queue'yu oluştur
+    violation_queue = asyncio.Queue()
+    
+    # Consumer task'ı başlat
+    consumer_task = asyncio.create_task(violation_consumer_task(violation_queue))
+    
+    # 📌 Model'i arka planda ön-yükle (bloke etmez)
+    model_path = get_active_model_path()
+    if model_path and Path(model_path).exists():
+        print(f"[startup] 🚀 Modeli arka planda ön-yüklüyoruz: {model_path}")
+        preload_model_async(model_path)
+        print(f"[startup] ✅ Model ön-yükleme başlatıldı (kamera donmayacak)")
+    
+    # 📌 Tüm kameraları otomatik başlat
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(models.Camera))
+            cameras = result.scalars().all()
+            if cameras:
+                print(f"[startup] 📹 {len(cameras)} kamera bulundu, başlatılıyor...")
+                for cam in cameras:
+                    print(f"[startup] Starting camera: {cam.id} (name: {cam.name}, rtsp: {cam.rtsp_url})")
+                    # Non-blocking kamera başlatma (thread'de çalışacak)
+                    start_camera_thread(cam.id, cam.rtsp_url)
+            else:
+                print(f"[startup] ⚠️ Hiç kamera bulunamadı")
+    except Exception as e:
+        print(f"[startup] ❌ Kamera başlatma hatası: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Detect endpoint'i ekleyin
 @app.post("/api/detect")

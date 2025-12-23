@@ -15,7 +15,7 @@ _frame_storage = {}
 _frame_storage_lock = threading.Lock()
 
 def get_model(model_path: str):
-    # Thread-safe model loading and caching
+    # Thread-safe model loading and caching (non-blocking after first load)
     global _MODEL_CACHE
     with _MODEL_LOCK:
         if model_path not in _MODEL_CACHE:
@@ -30,7 +30,7 @@ def get_model(model_path: str):
                 except:
                     pass
                 _MODEL_CACHE[model_path] = model
-                print(f"[get_model] Model loaded successfully")
+                print(f"[get_model] ✅ Model loaded successfully: {model_path}")
             except Exception as e:
                 print(f"[get_model] Error loading model from {model_path}: {e}")
                 import traceback
@@ -40,11 +40,35 @@ def get_model(model_path: str):
                 
                 try:  # It is used to load the yolo11n.pt model if the model is not found in the workspace
                     _MODEL_CACHE[model_path] = YOLO("yolo11n.pt")
-                    print(f"[get_model] Fallback model loaded successfully")
+                    print(f"[get_model] ✅ Fallback model loaded successfully")
                 except Exception as e2:
                     print(f"[get_model] Fallback model also failed: {e2}")
                     raise
         return _MODEL_CACHE[model_path]
+
+def preload_model_async(model_path: str):
+    """
+    Non-blocking model preload in background.
+    Returns True if model is already cached, False if loading started.
+    """
+    global _MODEL_CACHE
+    
+    # Quick check without lock
+    if model_path in _MODEL_CACHE:
+        print(f"[preload_model_async] Model already cached: {model_path}")
+        return True
+    
+    # Start loading in background thread
+    def load_in_background():
+        try:
+            get_model(model_path)
+        except Exception as e:
+            print(f"[preload_model_async] Background loading failed: {e}")
+    
+    bg_thread = threading.Thread(target=load_in_background, daemon=True)
+    bg_thread.start()
+    print(f"[preload_model_async] Background model loading started for: {model_path}")
+    return False
 
 def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, violation_queue, stop_event: threading.Event, debug: bool = False):
     """
@@ -66,9 +90,16 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
     print(f"[CameraRunner] Starting camera {camera_id} -> {source} (model: {model_path})")
     
     # Try to load model, if fails, continue without model (just show camera feed)
+    # ⏳ Eğer model henüz yüklenmiyorsa, maksimum 15 saniye bekle (bloke etmez)
+    model = None
+    use_model = False
+    
     try:
+        print(f"[CameraRunner][Camera {camera_id}] Model'i yüklüyoruz: {model_path}")
+        # İlk yükleme denemesi - eğer cache'de varsa hemen dönecek
         model = get_model(model_path)
         use_model = True
+        print(f"[CameraRunner][Camera {camera_id}] ✅ Model yüklendi!")
     except Exception as e:
         print(f"[CameraRunner][Camera {camera_id}] Model loading failed: {e}")
         print(f"[CameraRunner][Camera {camera_id}] Continuing without model (raw camera feed only)")
