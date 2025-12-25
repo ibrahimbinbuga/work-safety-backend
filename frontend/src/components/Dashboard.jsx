@@ -21,9 +21,9 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [chartData, setChartData] = useState([]);
 
-  // Backend'den Verileri Çek
+  // İlk yüklemede tüm verileri çek (cameras, detections, violations)
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchInitialData = async () => {
       try {
         setLoading(true);
         const [camerasRes, detectionsRes, violationsRes] = await Promise.all([
@@ -32,11 +32,12 @@ export function Dashboard() {
           axios.get(`${API_BASE}/api/violations`),
         ]);
 
+        // Camera listesini sadece ilk yüklemede set et - stream'leri kesmemek için
         setCameras(Array.isArray(camerasRes.data) ? camerasRes.data : []);
         setDetections(Array.isArray(detectionsRes.data) ? detectionsRes.data : []);
         setViolations(Array.isArray(violationsRes.data) ? violationsRes.data : []);
 
-        // Grafik verilerini oluştur (son 7 günü simüle et)
+        // Grafik verilerini oluştur
         generateChartData(Array.isArray(detectionsRes.data) ? detectionsRes.data : [], Array.isArray(violationsRes.data) ? violationsRes.data : []);
       } catch (err) {
         console.error("Backend Error:", err);
@@ -45,10 +46,40 @@ export function Dashboard() {
       }
     };
 
-    fetchData();
-    // Fetch every 10 seconds instead of 5 to allow streams to work properly
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    fetchInitialData();
+  }, []);
+
+  // Her 10 saniyede bir sadece detections ve violations'ı güncelle (cameras'ı güncelleme!)
+  useEffect(() => {
+    const fetchDynamicData = async () => {
+      try {
+        const [detectionsRes, violationsRes] = await Promise.all([
+          axios.get(`${API_BASE}/api/detections`),
+          axios.get(`${API_BASE}/api/violations`),
+        ]);
+        
+        setDetections(Array.isArray(detectionsRes.data) ? detectionsRes.data : []);
+        setViolations(Array.isArray(violationsRes.data) ? violationsRes.data : []);
+
+        // Grafik verilerini güncelle
+        generateChartData(Array.isArray(detectionsRes.data) ? detectionsRes.data : [], Array.isArray(violationsRes.data) ? violationsRes.data : []);
+      } catch (err) {
+        console.error("Backend Error:", err);
+      }
+    };
+
+    // İlk yüklemeden sonra başlat (1 saniye bekle)
+    const timeout = setTimeout(() => {
+      fetchDynamicData();
+    }, 1000);
+
+    // Her 10 saniyede bir güncelle
+    const interval = setInterval(fetchDynamicData, 10000);
+
+    return () => {
+      clearTimeout(timeout);
+      clearInterval(interval);
+    };
   }, []);
 
   // Grafik verilerini oluştur

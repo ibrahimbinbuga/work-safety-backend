@@ -3,20 +3,39 @@ import { Camera, PlayCircle, StopCircle } from 'lucide-react';
 
 function LiveCameraFeedComponent({ camera }) {
   const imgRef = useRef(null);
+  const streamUrlRef = useRef(null);
+  const currentCameraIdRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!isPlaying || !imgRef.current) return;
+    const streamUrl = `http://127.0.0.1:8000/api/camera/${camera.id}/stream`;
+    const cameraIdChanged = currentCameraIdRef.current !== camera.id;
+    
+    // Update refs
+    currentCameraIdRef.current = camera.id;
+    streamUrlRef.current = streamUrl;
 
+    if (!imgRef.current) return;
+
+    if (!isPlaying) {
+      // Stop stream when isPlaying is false
+      if (imgRef.current.src) {
+        imgRef.current.src = '';
+      }
+      return;
+    }
+
+    // Don't restart stream if camera ID hasn't changed and already streaming with same URL
+    if (!cameraIdChanged && imgRef.current.src === streamUrl && imgRef.current.src !== '') {
+      return;
+    }
+
+    // Start or restart stream
     setIsLoading(true);
     setError(null);
 
-    // Set the MJPEG stream URL directly to img tag
-    const streamUrl = `http://127.0.0.1:8000/api/camera/${camera.id}/stream`;
-    
-    // For MJPEG streams, we use an img tag which automatically handles the streaming
     const handleImageLoad = () => {
       console.log(`[Camera ${camera.id}] Stream loaded successfully`);
       setIsLoading(false);
@@ -28,18 +47,17 @@ function LiveCameraFeedComponent({ camera }) {
       setIsLoading(false);
     };
 
-    if (imgRef.current) {
-      imgRef.current.src = streamUrl;
-      imgRef.current.addEventListener('load', handleImageLoad);
-      imgRef.current.addEventListener('error', handleImageError);
+    // Set the MJPEG stream URL directly to img tag
+    imgRef.current.src = streamUrl;
+    imgRef.current.addEventListener('load', handleImageLoad);
+    imgRef.current.addEventListener('error', handleImageError);
 
-      return () => {
-        if (imgRef.current) {
-          imgRef.current.removeEventListener('load', handleImageLoad);
-          imgRef.current.removeEventListener('error', handleImageError);
-        }
-      };
-    }
+    return () => {
+      if (imgRef.current) {
+        imgRef.current.removeEventListener('load', handleImageLoad);
+        imgRef.current.removeEventListener('error', handleImageError);
+      }
+    };
   }, [isPlaying, camera.id]);
 
   const toggleStream = (e) => {
@@ -59,13 +77,12 @@ function LiveCameraFeedComponent({ camera }) {
           </div>
         )}
 
-        {isPlaying ? (
-          <img
-            ref={imgRef}
-            className="w-full h-full object-cover"
-            alt={camera.name}
-          />
-        ) : (
+        <img
+          ref={imgRef}
+          className={`w-full h-full object-cover ${isPlaying ? '' : 'hidden'}`}
+          alt={camera.name}
+        />
+        {!isPlaying && (
           <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-gray-900 opacity-50"></div>
         )}
 
@@ -122,9 +139,14 @@ function LiveCameraFeedComponent({ camera }) {
   );
 }
 
+// Memoize component to prevent re-renders from Dashboard updates
+// Only re-render if camera.id, status, name, or location actually changes
 export const LiveCameraFeed = memo(LiveCameraFeedComponent, (prevProps, nextProps) => {
+  // Return true if props are equal (skip re-render), false if different (re-render)
   return (
     prevProps.camera.id === nextProps.camera.id &&
-    prevProps.camera.status === nextProps.camera.status
+    prevProps.camera.status === nextProps.camera.status &&
+    prevProps.camera.name === nextProps.camera.name &&
+    prevProps.camera.location === nextProps.camera.location
   );
 });
