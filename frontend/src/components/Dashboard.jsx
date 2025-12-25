@@ -2,62 +2,98 @@ import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Camera, Activity, AlertTriangle, CheckCircle, XCircle, MoreVertical, Shirt, HardHat } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-
-// Grafik Verisi (Statik)
-const chartData = [
-  { date: 'Mon', detections: 856, violations: 42 },
-  { date: 'Tue', detections: 932, violations: 38 },
-  { date: 'Wed', detections: 1104, violations: 45 },
-  { date: 'Thu', detections: 978, violations: 35 },
-  { date: 'Fri', detections: 1247, violations: 40 },
-  { date: 'Sat', detections: 654, violations: 18 },
-  { date: 'Sun', detections: 423, violations: 12 },
-];
+import { LiveCameraFeed } from './LiveCameraFeed';
 
 // Sistem Durumu Verisi
 const systemStatus = [
   { name: 'AI Detection Model', status: 'online', uptime: '99.8%' },
   { name: 'Database Server', status: 'online', uptime: '100%' },
   { name: 'Alert Service', status: 'online', uptime: '99.9%' },
-  { name: 'Camera Network', status: 'warning', uptime: '95.2%' },
+  { name: 'Camera Network', status: 'online', uptime: '98.5%' },
 ];
+
+const API_BASE = 'http://127.0.0.1:8000';
 
 export function Dashboard() {
   const [cameras, setCameras] = useState([]);
+  const [detections, setDetections] = useState([]);
+  const [violations, setViolations] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [chartData, setChartData] = useState([]);
 
-  // Backend'den Kamera Verilerini Çek
+  // Backend'den Verileri Çek
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const response = await axios.get('http://127.0.0.1:8000/api/cameras');
-        if (Array.isArray(response.data)) {
-            setCameras(response.data);
-        }
+        setLoading(true);
+        const [camerasRes, detectionsRes, violationsRes] = await Promise.all([
+          axios.get(`${API_BASE}/api/cameras`),
+          axios.get(`${API_BASE}/api/detections`),
+          axios.get(`${API_BASE}/api/violations`),
+        ]);
+
+        setCameras(Array.isArray(camerasRes.data) ? camerasRes.data : []);
+        setDetections(Array.isArray(detectionsRes.data) ? detectionsRes.data : []);
+        setViolations(Array.isArray(violationsRes.data) ? violationsRes.data : []);
+
+        // Grafik verilerini oluştur (son 7 günü simüle et)
+        generateChartData(Array.isArray(detectionsRes.data) ? detectionsRes.data : [], Array.isArray(violationsRes.data) ? violationsRes.data : []);
       } catch (err) {
         console.error("Backend Error:", err);
       } finally {
         setLoading(false);
       }
     };
-    
+
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, []);
 
+  // Grafik verilerini oluştur
+  const generateChartData = (detections, violations) => {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const data = days.map(day => ({
+      date: day,
+      detections: Math.floor(Math.random() * 500) + 400,
+      violations: Math.floor(Math.random() * 50) + 10,
+    }));
+    setChartData(data);
+  };
+
   // İstatistik Kartları Verisi
+  const helmetViolations = violations.filter(v => v.ihlal_cesidi === 'head').length;
+  const vestViolations = violations.filter(v => v.ihlal_cesidi === 'vest').length;
+  
   const statsData = [
     { 
       title: 'Total Cameras', 
-      value: cameras.length || 0, // Backend'den gelen gerçek sayı
+      value: cameras.length || 0,
       icon: Camera, 
       color: 'bg-blue-500', 
-      change: '+2 this week' 
+      change: `${cameras.filter(c => c.status === 'online').length} online` 
     },
-    { title: "Today's Detections", value: '1,247', icon: Activity, color: 'bg-green-500', change: '+18% from yesterday' },
-    { title: 'Helmet Violations', value: '23', icon: HardHat, color: 'bg-orange-500', change: '-5% from yesterday' },
-    { title: 'Vest Violations', value: '17', icon: Shirt, color: 'bg-red-500', change: '-12% from yesterday' },
+    { 
+      title: "Total Detections", 
+      value: detections.length || 0, 
+      icon: Activity, 
+      color: 'bg-green-500', 
+      change: `${violations.length} violations` 
+    },
+    { 
+      title: 'Helmet Violations', 
+      value: helmetViolations, 
+      icon: HardHat, 
+      color: 'bg-orange-500', 
+      change: 'Missing helmet' 
+    },
+    { 
+      title: 'Vest Violations', 
+      value: vestViolations, 
+      icon: Shirt, 
+      color: 'bg-red-500', 
+      change: 'Missing vest' 
+    },
   ];
 
   return (
@@ -92,7 +128,7 @@ export function Dashboard() {
           </div>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
+              <BarChart data={chartData && chartData.length > 0 ? chartData : []}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
                 <XAxis dataKey="date" stroke="#6b7280" tickLine={false} axisLine={false} />
                 <YAxis stroke="#6b7280" tickLine={false} axisLine={false} />
@@ -154,40 +190,7 @@ export function Dashboard() {
              <p className="text-gray-400 col-span-2 text-center py-10">No cameras connected.</p>
           ) : (
              cameras.map((camera) => (
-                <div key={camera.id} className="space-y-3 p-4 border border-gray-100 rounded-xl hover:shadow-md transition-shadow">
-                  {/* Video/Image Placeholder */}
-                  <div className="bg-gray-900 rounded-lg aspect-video flex items-center justify-center relative overflow-hidden group">
-                    <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-gray-900 opacity-50"></div>
-                    <Camera className="w-12 h-12 text-gray-600 relative z-10 group-hover:scale-110 transition-transform" />
-                    
-                    {/* Status Badge */}
-                    {camera.status === 'online' ? (
-                        <div className="absolute top-3 right-3 bg-green-500/90 text-white px-2 py-1 rounded text-xs font-bold flex items-center backdrop-blur-sm">
-                            <div className="w-1.5 h-1.5 bg-white rounded-full mr-1.5 animate-pulse"></div>
-                            LIVE
-                        </div>
-                    ) : (
-                        <div className="absolute top-3 right-3 bg-gray-500/90 text-white px-2 py-1 rounded text-xs font-bold backdrop-blur-sm">
-                            OFFLINE
-                        </div>
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-gray-900 font-semibold">{camera.name}</p>
-                      <p className="text-gray-500 text-xs">{camera.location}</p>
-                    </div>
-                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                        camera.status === 'online' 
-                        ? 'bg-green-50 text-green-700 border-green-100' 
-                        : 'bg-red-50 text-red-700 border-red-100'
-                    }`}>
-                      {camera.status.toUpperCase()}
-                    </span>
-                  </div>
-                </div>
+                <LiveCameraFeed key={camera.id} camera={camera} />
              ))
           )}
         </div>
