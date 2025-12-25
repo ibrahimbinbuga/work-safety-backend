@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, memo } from 'react';
 import { Camera, PlayCircle, StopCircle } from 'lucide-react';
 
-export function LiveCameraFeed({ camera }) {
+function LiveCameraFeedComponent({ camera }) {
   const imgRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -121,3 +121,10 @@ export function LiveCameraFeed({ camera }) {
     </div>
   );
 }
+
+export const LiveCameraFeed = memo(LiveCameraFeedComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.camera.id === nextProps.camera.id &&
+    prevProps.camera.status === nextProps.camera.status
+  );
+});

@@ -46,7 +46,8 @@ export function Dashboard() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    // Fetch every 10 seconds instead of 5 to allow streams to work properly
+    const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, []);
 
