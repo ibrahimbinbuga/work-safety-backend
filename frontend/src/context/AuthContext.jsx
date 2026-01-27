@@ -1,5 +1,6 @@
 // frontend/src/context/AuthContext.jsx
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { logout as apiLogout } from '../utils/api';
 
 const AuthContext = createContext();
 
@@ -74,12 +75,19 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('user');
-    setToken(null);
-    setUser(null);
-    setError(null);
+  const logout = async () => {
+    try {
+      // Call backend logout endpoint
+      await apiLogout();
+    } catch (err) {
+      console.error('Logout error:', err);
+      // Continue with local logout even if API call fails
+    } finally {
+      // Always clear local state
+      setToken(null);
+      setUser(null);
+      setError(null);
+    }
   };
 
   const isAuthenticated = !!token;

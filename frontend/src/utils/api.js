@@ -51,6 +51,25 @@ export const apiCall = async (endpoint, options = {}) => {
 };
 
 /**
+ * Logout from API
+ */
+export const logout = async () => {
+  try {
+    const token = getAuthToken();
+    if (token) {
+      await apiCall('/api/auth/logout', {
+        method: 'POST',
+      });
+    }
+  } catch (err) {
+    console.error('Logout API error:', err);
+    // Continue with local logout even if API call fails
+  }
+  // Clear local storage regardless of API response
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('user');
+};
+/**
  * Helper for GET requests
  */
 export const get = (endpoint, options = {}) => {
