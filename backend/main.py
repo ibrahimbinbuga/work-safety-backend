@@ -9,7 +9,9 @@ from pathlib import Path
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from fastapi.security import HTTPBearer
+from fastapi.security.http import HTTPAuthorizationCredentials
+
 from sqlalchemy import select, update
 from database import engine, Base, AsyncSessionLocal, get_db
 import models
@@ -50,7 +52,7 @@ main_loop = None
 
 # ===== Authentication Dependencies =====
 
-async def get_current_user(credentials: HTTPAuthCredentials = Depends(security), db: AsyncSession = Depends(get_db)) -> TokenData:
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: AsyncSession = Depends(get_db)) -> TokenData:
     """
     Extract and validate JWT token from Authorization header.
     Returns the token data (user_id, email, role).
