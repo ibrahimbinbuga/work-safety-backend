@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { TopNav } from './components/TopNav';
+import LoginPage from './components/LoginPage';
+import { AuthProvider, useAuth } from './context/AuthContext';
 
 // Diğer bileşenler henüz boşsa hata vermemesi için basitçe import edelim
 // Eğer yukarıdaki 4. adımı yaptıysan bu importları açabilirsin:
@@ -11,15 +13,20 @@ import { Violations } from './components/Violations';
 import { Reporting } from './components/Reporting';
 import { Settings } from './components/Settings';
 
-export default function App() {
+function AppContent() {
+  const { isAuthenticated, user } = useAuth();
   const [activePage, setActivePage] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  if (!isAuthenticated) {
+    return <LoginPage onLoginSuccess={() => setActivePage('dashboard')} />;
+  }
 
   const renderPage = () => {
     switch (activePage) {
       case 'dashboard': return <Dashboard />;
       case 'cameras': return <Cameras />;
-      case 'model': return <ModelManagement />;
+      case 'model': return user?.role === 'admin' ? <ModelManagement /> : <Dashboard />;
       case 'violations': return <Violations />;
       case 'reporting': return <Reporting />;
       case 'settings': return <Settings />;
@@ -44,5 +51,13 @@ export default function App() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
