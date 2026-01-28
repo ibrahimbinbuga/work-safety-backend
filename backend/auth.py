@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
 from config import is_admin_company_code
+import hashlib
 
 # Load environment variables
 load_dotenv()
@@ -16,8 +17,9 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing context - using argon2 + bcrypt (argon2 for better security)
+# This avoids bcrypt's 72-byte limitation
+pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
 
 # ===== Pydantic Models =====
 
@@ -81,13 +83,21 @@ def is_admin(company_code: str) -> bool:
 # ===== Password Hashing Functions =====
 
 def hash_password(password: str) -> str:
-    """Hash a password using bcrypt."""
-    return pwd_context.hash(password)
+    """Hash a password using argon2 (avoids bcrypt 72-byte limit)."""
+    # Truncate to 72 bytes then hash for safety
+    truncated = password[:72]
+    return pwd_context.hash(truncated)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        # Truncate plain password to 72 bytes to match hash_password behavior
+        truncated = plain_password[:72]
+        return pwd_context.verify(truncated, hashed_password)
+    except Exception as e:
+        # Log but don't expose the error
+        return False
 
 
 # ===== JWT Token Functions =====

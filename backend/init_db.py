@@ -52,19 +52,19 @@ USERS = [
     
     # COMPANY001 (ABC İnşaat)
     {"email": "user1@abc.com", "password": "password123", "company_code": "COMPANY001", "role": "user"},
-    {"email": "manager1@abc.com", "password": "password123", "company_code": "COMPANY001", "role": "manager"},
+    {"email": "manager1@abc.com", "password": "password123", "company_code": "COMPANY001", "role": "admin"},
     
     # COMPANY002 (XYZ Fabrika)
     {"email": "user2@xyz.com", "password": "password123", "company_code": "COMPANY002", "role": "user"},
-    {"email": "manager2@xyz.com", "password": "password123", "company_code": "COMPANY002", "role": "manager"},
+    {"email": "manager2@xyz.com", "password": "password123", "company_code": "COMPANY002", "role": "admin"},
     
     # COMPANY003 (DEF Lojistik)
     {"email": "user3@def.com", "password": "password123", "company_code": "COMPANY003", "role": "user"},
-    {"email": "manager3@def.com", "password": "password123", "company_code": "COMPANY003", "role": "manager"},
+    {"email": "manager3@def.com", "password": "password123", "company_code": "COMPANY003", "role": "admin"},
     
     # COMPANY004 (GHI Mayın)
     {"email": "user4@ghi.com", "password": "password123", "company_code": "COMPANY004", "role": "user"},
-    {"email": "manager4@ghi.com", "password": "password123", "company_code": "COMPANY004", "role": "manager"},
+    {"email": "manager4@ghi.com", "password": "password123", "company_code": "COMPANY004", "role": "admin"},
 ]
 
 

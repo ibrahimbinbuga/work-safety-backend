@@ -90,7 +90,6 @@ export const AuthProvider = ({ children }) => {
       return true;
     } catch (err) {
       setError(err.message);
-      console.error('Login error:', err);
       return false;
     } finally {
       setLoading(false);

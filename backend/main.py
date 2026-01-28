@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from fastapi.security import HTTPBearer
 from fastapi.security.http import HTTPAuthorizationCredentials
 
@@ -277,6 +277,17 @@ async def save_violation_async(payload: dict):
 async def root():
     return {"message": "SafetyWatch API running"}
 
+# ===== CORS Preflight Handler =====
+@app.options("/{path:path}")
+async def preflight_handler():
+    return Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        }
+    )
+
 # ===== Authentication Endpoints =====
 
 @app.post("/api/auth/login", response_model=Token)
@@ -336,7 +347,9 @@ async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db))
         )
     
     # Verify password
-    if not verify_password(login_request.password, user.hashed_password):
+    password_valid = verify_password(login_request.password, user.hashed_password)
+    
+    if not password_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
