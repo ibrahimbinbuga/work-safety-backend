@@ -1,7 +1,7 @@
 # backend/init_db.py
 """
 Database initialization script.
-Creates all tables and seeds initial data (admin user and sample company).
+Creates all tables and seeds initial data with super admin and multiple companies.
 
 Usage:
     python init_db.py
@@ -37,11 +37,46 @@ AsyncSessionLocal = sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False, future=True
 )
 
+# Test data structure
+COMPANIES = [
+    {"code": "ADMIN", "name": "System Admin", "is_admin": True},
+    {"code": "COMPANY001", "name": "ABC İnşaat", "is_admin": False},
+    {"code": "COMPANY002", "name": "XYZ Fabrika", "is_admin": False},
+    {"code": "COMPANY003", "name": "DEF Lojistik", "is_admin": False},
+    {"code": "COMPANY004", "name": "GHI Mayın", "is_admin": False},
+]
+
+USERS = [
+    # Super Admin
+    {"email": "admin@system.com", "password": "admin123", "company_code": "ADMIN", "role": "admin"},
+    
+    # COMPANY001 (ABC İnşaat)
+    {"email": "user1@abc.com", "password": "password123", "company_code": "COMPANY001", "role": "user"},
+    {"email": "manager1@abc.com", "password": "password123", "company_code": "COMPANY001", "role": "manager"},
+    
+    # COMPANY002 (XYZ Fabrika)
+    {"email": "user2@xyz.com", "password": "password123", "company_code": "COMPANY002", "role": "user"},
+    {"email": "manager2@xyz.com", "password": "password123", "company_code": "COMPANY002", "role": "manager"},
+    
+    # COMPANY003 (DEF Lojistik)
+    {"email": "user3@def.com", "password": "password123", "company_code": "COMPANY003", "role": "user"},
+    {"email": "manager3@def.com", "password": "password123", "company_code": "COMPANY003", "role": "manager"},
+    
+    # COMPANY004 (GHI Mayın)
+    {"email": "user4@ghi.com", "password": "password123", "company_code": "COMPANY004", "role": "user"},
+    {"email": "manager4@ghi.com", "password": "password123", "company_code": "COMPANY004", "role": "manager"},
+]
+
 
 async def init_db():
     """Initialize database: create tables and seed initial data."""
     
-    print("🔄 Creating all tables...")
+    print("=" * 60)
+    print("🔄 DATABASE INITIALIZATION STARTING...")
+    print("=" * 60)
+    
+    # Create tables
+    print("\n🔄 Creating all tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     print("✅ Tables created successfully")
@@ -59,54 +94,38 @@ async def init_db():
             print(f"⚠️  No existing data to clear: {e}")
             await session.rollback()
     
-    # Create sample company and admin user
+    # Create companies and users
     async with AsyncSessionLocal() as session:
         try:
-            # Check if company already exists
-            from sqlalchemy import select
-            existing_company = await session.execute(
-                select(models.Company).where(models.Company.code == "COMPANY001")
-            )
+            print("\n📝 Creating companies...")
+            companies_dict = {}
             
-            if existing_company.scalar_one_or_none() is None:
-                print("\n📝 Creating sample company...")
+            for company_data in COMPANIES:
                 company = models.Company(
-                    code="COMPANY001",
-                    name="Sample Company"
+                    code=company_data["code"],
+                    name=company_data["name"]
                 )
                 session.add(company)
-                await session.flush()  # Get the company ID
-                
-                print("✅ Sample company created: COMPANY001")
-                
-                # Create admin user
-                print("👤 Creating admin user...")
-                admin_user = models.User(
-                    email="admin@company.com",
-                    hashed_password=hash_password("admin123"),  # Change this password!
-                    company_id=company.id,
-                    role="admin",
-                    is_active=True
-                )
-                session.add(admin_user)
-                
-                # Create sample regular user
-                print("👤 Creating sample user...")
-                regular_user = models.User(
-                    email="user@company.com",
-                    hashed_password=hash_password("user123"),  # Change this password!
-                    company_id=company.id,
-                    role="user",
-                    is_active=True
-                )
-                session.add(regular_user)
-                
-                await session.commit()
-                
-                print("✅ Admin user created: admin@company.com (password: admin123)")
-                print("✅ Sample user created: user@company.com (password: user123)")
-            else:
-                print("⚠️  Sample company already exists. Skipping seeding.")
+                await session.flush()
+                companies_dict[company_data["code"]] = company
+                print(f"  ✅ {company_data['code']} - {company_data['name']}")
+            
+            print("\n👤 Creating users...")
+            for user_data in USERS:
+                company = companies_dict.get(user_data["company_code"])
+                if company:
+                    user = models.User(
+                        email=user_data["email"],
+                        hashed_password=hash_password(user_data["password"]),
+                        company_id=company.id,
+                        role=user_data["role"],
+                        is_active=True
+                    )
+                    session.add(user)
+                    print(f"  ✅ {user_data['email']} ({user_data['role']}) -> {user_data['company_code']}")
+            
+            await session.commit()
+            print("\n✅ All users created successfully")
             
         except Exception as e:
             print(f"❌ Error during initialization: {e}")
@@ -115,14 +134,35 @@ async def init_db():
             traceback.print_exc()
     
     await engine.dispose()
-    print("\n✨ Database initialization complete!")
-    print("\n📋 Test Credentials:")
-    print("  Company Code: COMPANY001")
-    print("  Admin Email: admin@company.com")
-    print("  Admin Password: admin123")
-    print("  User Email: user@company.com")
-    print("  User Password: user123")
+    
+    # Print summary
+    print("\n" + "=" * 60)
+    print("✨ DATABASE INITIALIZATION COMPLETE!")
+    print("=" * 60)
+    
+    print("\n🔓 SUPER ADMIN Login (All Companies):")
+    print("    - Company Code: ADMIN")
+    print("    - Email: admin@system.com")
+    print("    - Password: admin123")
+    
+    print("\n🏢 COMPANY001 (ABC İnşaat):")
+    print("    - User: user1@abc.com / password123")
+    print("    - Manager: manager1@abc.com / password123")
+    
+    print("\n🏢 COMPANY002 (XYZ Fabrika):")
+    print("    - User: user2@xyz.com / password123")
+    print("    - Manager: manager2@xyz.com / password123")
+    
+    print("\n🏢 COMPANY003 (DEF Lojistik):")
+    print("    - User: user3@def.com / password123")
+    print("    - Manager: manager3@def.com / password123")
+    
+    print("\n🏢 COMPANY004 (GHI Mayın):")
+    print("    - User: user4@ghi.com / password123")
+    print("    - Manager: manager4@ghi.com / password123")
+    
     print("\n⚠️  IMPORTANT: Change these default passwords in production!")
+    print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
