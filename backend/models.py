@@ -44,16 +44,19 @@ class Camera(Base):
     location = Column(String)        # Örn: "Bölge 1"
     rtsp_url = Column(String)        # Kamera IP Adresi
     status = Column(String)          # online, offline
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Kamera hangi şirkete ait
     last_active = Column(DateTime(timezone=True), onupdate=func.now())
     
     # İlişki: Bir kameranın birden çok tespiti olabilir
     detections = relationship("Detection", back_populates="camera")
+    company = relationship("Company")
 
 # 2. Tespitler (İhlaller) Tablosu
 class Detection(Base):
     __tablename__ = "detections"
     id = Column(Integer, primary_key=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"))
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Tespit hangi şirkete ait
     
     detection_type = Column(String)  # no_helmet, no_vest
     confidence = Column(Float)       # 0.95
@@ -64,6 +67,7 @@ class Detection(Base):
 
     # İlişki: Tespit bir kameraya aittir
     camera = relationship("Camera", back_populates="detections")
+    company = relationship("Company")
 
 # 3. Sistem Sağlığı Tablosu
 class SystemLog(Base):
@@ -83,6 +87,9 @@ class Violations(Base):
     ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
     ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
     violation_id = Column(Integer, nullable=False)  # Worker ID olarak kullanılıyor (eski kodun mantığına uygun - manuel olarak set edilir)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # İhlal hangi şirkete ait
+    
+    company = relationship("Company")
 
 
 # 5. Model Meta Verileri Tablosu

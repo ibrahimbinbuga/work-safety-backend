@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Camera, Plus, Settings, Wifi, WifiOff, MoreVertical, RefreshCw } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export const Cameras = () => {
+  const { isAdmin, activeCompanyCode } = useAuth();
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -30,6 +32,17 @@ export const Cameras = () => {
     const interval = setInterval(fetchCameras, 10000); 
     return () => clearInterval(interval);
   }, []);
+
+  // Admin control - must select a company before viewing cameras
+  if (isAdmin && !activeCompanyCode) {
+    return (
+      <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">

@@ -24,8 +24,9 @@ import base64
 from datetime import datetime
 from auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
-    LoginRequest, Token, UserCreate, UserResponse, TokenData
+    LoginRequest, Token, UserCreate, UserResponse, TokenData, is_admin, CompanyResponse
 )
+from config import is_admin_company_code
 
 # Load environment variables
 load_dotenv()
@@ -88,6 +89,42 @@ async def get_admin_user(current_user: TokenData = Depends(get_current_user)) ->
             detail="Only admin users can perform this action"
         )
     return current_user
+
+
+async def verify_company_access(
+    current_user: TokenData = Depends(get_current_user),
+    company_code: Optional[str] = None
+) -> str:
+    """
+    Verify that the user has access to the requested company.
+    
+    - Admins (with admin company codes): Can access any company
+    - Regular users: Can only access their assigned company
+    
+    Args:
+        current_user: The current authenticated user
+        company_code: The company code being requested (optional)
+    
+    Returns:
+        The verified company code
+    """
+    # If no specific company code is requested, use the user's company code
+    if company_code is None:
+        company_code = current_user.company_code
+    
+    # Check if user is admin (has admin company code)
+    if is_admin(current_user.company_code):
+        # Admins can access any company
+        return company_code
+    
+    # Regular users can only access their own company
+    if company_code != current_user.company_code:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this company's data"
+        )
+    
+    return company_code
 
 # Model path - cross-platform compatible
 # First try from environment variable, then use relative path
@@ -246,27 +283,50 @@ async def root():
 async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db)):
     """
     Login endpoint: validates email, password, and company code.
+    
+    Admin users: company_code must be an admin code (e.g., ADMIN, SUPERADMIN)
+    Regular users: company_code must exist in the companies table
+    
     Returns JWT token if credentials are valid.
     """
-    # Find company by code (case-insensitive)
-    company_result = await db.execute(
-        select(models.Company).where(func.upper(models.Company.code) == func.upper(login_request.company_code))
-    )
-    company = company_result.scalar_one_or_none()
+    # Check if this is an admin code
+    is_admin_login = is_admin_company_code(login_request.company_code)
     
-    if not company:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid company code"
+    company_id = None
+    
+    if is_admin_login:
+        # For admin codes, we don't need to find a company in the database
+        # Admin can access all companies
+        company_id = None
+    else:
+        # For regular company codes, find the company in the database
+        company_result = await db.execute(
+            select(models.Company).where(func.upper(models.Company.code) == func.upper(login_request.company_code))
+        )
+        company = company_result.scalar_one_or_none()
+        
+        if not company:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid company code"
+            )
+        company_id = company.id
+    
+    # Find user by email
+    if company_id:
+        # Regular user: must belong to the specific company
+        user_result = await db.execute(
+            select(models.User).where(
+                (models.User.email == login_request.email) &
+                (models.User.company_id == company_id)
+            )
+        )
+    else:
+        # Admin login: find user with this email (admin can have any email)
+        user_result = await db.execute(
+            select(models.User).where(models.User.email == login_request.email)
         )
     
-    # Find user by email and company
-    user_result = await db.execute(
-        select(models.User).where(
-            (models.User.email == login_request.email) &
-            (models.User.company_id == company.id)
-        )
-    )
     user = user_result.scalar_one_or_none()
     
     if not user:
@@ -289,11 +349,12 @@ async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db))
             detail="User account is inactive"
         )
     
-    # Create access token
+    # Create access token with company code
     access_token = create_access_token(
         user_id=user.id,
         email=user.email,
-        role=user.role
+        role=user.role,
+        company_code=login_request.company_code
     )
     
     return Token(
@@ -301,7 +362,8 @@ async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db))
         token_type="bearer",
         user_id=user.id,
         email=user.email,
-        role=user.role
+        role=user.role,
+        company_code=login_request.company_code
     )
 
 
@@ -322,6 +384,29 @@ async def logout(current_user: TokenData = Depends(get_current_user)):
     Logout endpoint (token invalidation should be handled on client side).
     """
     return {"status": "success", "message": "Logged out successfully"}
+
+
+@app.get("/api/companies", response_model=list[CompanyResponse])
+async def get_companies(
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all companies from database.
+    Only accessible by admin users (those with admin company codes).
+    """
+    # Check if user is admin
+    if not is_admin(current_user.company_code):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can access company list"
+        )
+    
+    # Get all companies
+    result = await db.execute(select(models.Company).order_by(models.Company.name))
+    companies = result.scalars().all()
+    
+    return companies
 
 
 # ===== Admin User Management Endpoints =====
@@ -459,29 +544,144 @@ async def delete_user(
 # ===== Protected Camera Endpoints =====
 
 @app.get("/api/cameras")
-async def get_cameras(current_user: TokenData = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.Camera))
+async def get_cameras(
+    current_user: TokenData = Depends(get_current_user),
+    company_code: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all cameras for a company."""
+    # Verify access and get the company code to use
+    verified_company_code = await verify_company_access(current_user, company_code)
+    
+    # Find the company by code
+    company_result = await db.execute(
+        select(models.Company).where(
+            func.upper(models.Company.code) == func.upper(verified_company_code)
+        )
+    )
+    company = company_result.scalar_one_or_none()
+    
+    if not company and not is_admin(verified_company_code):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Company not found"
+        )
+    
+    # If admin using admin code, get all cameras
+    if is_admin(verified_company_code):
+        result = await db.execute(select(models.Camera))
+    else:
+        # Regular user: get cameras for their company
+        result = await db.execute(
+            select(models.Camera).where(models.Camera.company_id == company.id)
+        )
+    
     return result.scalars().all()
+
 
 @app.get("/api/detections")
-async def get_detections(current_user: TokenData = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.Detection))
+async def get_detections(
+    current_user: TokenData = Depends(get_current_user),
+    company_code: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all detections for a company."""
+    # Verify access and get the company code to use
+    verified_company_code = await verify_company_access(current_user, company_code)
+    
+    # Find the company by code
+    company_result = await db.execute(
+        select(models.Company).where(
+            func.upper(models.Company.code) == func.upper(verified_company_code)
+        )
+    )
+    company = company_result.scalar_one_or_none()
+    
+    if not company and not is_admin(verified_company_code):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Company not found"
+        )
+    
+    # If admin using admin code, get all detections
+    if is_admin(verified_company_code):
+        result = await db.execute(select(models.Detection))
+    else:
+        # Regular user: get detections for their company
+        result = await db.execute(
+            select(models.Detection).where(models.Detection.company_id == company.id)
+        )
+    
     return result.scalars().all()
 
+
 @app.get("/api/violations")
-async def get_violations(current_user: TokenData = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Get all violations from the database."""
-    result = await db.execute(select(models.Violation).order_by(models.Violation.tarih_saat.desc()))
+async def get_violations(
+    current_user: TokenData = Depends(get_current_user),
+    company_code: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all violations for a company."""
+    # Verify access and get the company code to use
+    verified_company_code = await verify_company_access(current_user, company_code)
+    
+    # Find the company by code
+    company_result = await db.execute(
+        select(models.Company).where(
+            func.upper(models.Company.code) == func.upper(verified_company_code)
+        )
+    )
+    company = company_result.scalar_one_or_none()
+    
+    if not company and not is_admin(verified_company_code):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Company not found"
+        )
+    
+    # If admin using admin code, get all violations
+    if is_admin(verified_company_code):
+        result = await db.execute(
+            select(models.Violations).order_by(models.Violations.tarih_saat.desc())
+        )
+    else:
+        # Regular user: get violations for their company
+        result = await db.execute(
+            select(models.Violations)
+            .where(models.Violations.company_id == company.id)
+            .order_by(models.Violations.tarih_saat.desc())
+        )
+    
     violations = result.scalars().all()
     return violations
 
 @app.post("/api/camera/{camera_id}/start-local")
-async def api_start_local_camera(camera_id: int, current_user: TokenData = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def api_start_local_camera(
+    camera_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Start camera thread with local camera (0) instead of RTSP URL."""
     async with AsyncSessionLocal() as session:
         cam = await session.get(models.Camera, camera_id)
         if not cam:
             return {"error": "camera not found"}
+        
+        # Verify company access to this camera
+        if not is_admin(current_user.company_code):
+            # Check if the camera belongs to the user's company
+            company_result = await session.execute(
+                select(models.Company).where(
+                    func.upper(models.Company.code) == func.upper(current_user.company_code)
+                )
+            )
+            company = company_result.scalar_one_or_none()
+            if not company or cam.company_id != company.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You don't have access to this camera"
+                )
+        
         # Use "0" for local camera
         print(f"[api_start_local_camera] Starting local camera for camera_id={camera_id}")
         start_camera_thread(cam.id, "0")
@@ -489,7 +689,34 @@ async def api_start_local_camera(camera_id: int, current_user: TokenData = Depen
 
 
 @app.post("/api/camera/{camera_id}/stop")
-async def api_stop_camera(camera_id: int, current_user: TokenData = Depends(get_current_user)):
+async def api_stop_camera(
+    camera_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Stop camera thread."""
+    # Verify access to camera
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found"
+        )
+    
+    if not is_admin(current_user.company_code):
+        # Check if the camera belongs to the user's company
+        company_result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == func.upper(current_user.company_code)
+            )
+        )
+        company = company_result.scalar_one_or_none()
+        if not company or cam.company_id != company.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera"
+            )
+    
     info = camera_threads.get(camera_id)
     if not info:
         return {"status": "not running"}

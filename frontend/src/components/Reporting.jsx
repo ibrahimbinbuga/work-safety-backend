@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Calendar, Download, FileText, TrendingUp, AlertTriangle, Camera, Clock, FileSpreadsheet } from 'lucide-react';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useAuth } from '../context/AuthContext';
 
 // Rapor Verisi (Şimdilik Statik)
 const reportData = {
@@ -49,6 +50,7 @@ const reportData = {
 };
 
 export function Reporting() {
+  const { isAdmin, activeCompanyCode } = useAuth();
   const [reportPeriod, setReportPeriod] = useState('week');
   const [startDate, setStartDate] = useState('2025-11-11');
   const [endDate, setEndDate] = useState('2025-11-17');
@@ -79,6 +81,17 @@ export function Reporting() {
       setEndDate(today.toISOString().split('T')[0]);
     }
   };
+
+  // Admin control - must select a company before viewing reports
+  if (isAdmin && !activeCompanyCode) {
+    return (
+      <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">

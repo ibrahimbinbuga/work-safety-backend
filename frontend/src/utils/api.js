@@ -68,6 +68,7 @@ export const logout = async () => {
   // Clear local storage regardless of API response
   localStorage.removeItem('accessToken');
   localStorage.removeItem('user');
+  localStorage.removeItem('companyCode');
 };
 /**
  * Helper for GET requests
@@ -141,4 +142,22 @@ export const uploadFile = async (endpoint, formData, options = {}) => {
   }
 
   return response.json();
+};
+
+/**
+ * Get all companies (admin only)
+ */
+export const getCompanies = async () => {
+  return get('/api/companies');
+};
+
+/**
+ * Add company_code to API endpoint as query parameter
+ * Used for endpoints that filter by company
+ */
+export const addCompanyCodeToUrl = (endpoint, companyCode) => {
+  if (!companyCode) return endpoint;
+  
+  const separator = endpoint.includes('?') ? '&' : '?';
+  return `${endpoint}${separator}company_code=${encodeURIComponent(companyCode)}`;
 };

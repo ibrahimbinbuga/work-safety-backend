@@ -1,8 +1,9 @@
 import { LayoutDashboard, Camera, BrainCircuit, AlertTriangle, FileText, Settings, X, LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import CompanySelector from './CompanySelector';
 
 export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
-  const { logout, user, isAdmin } = useAuth();
+  const { logout, user, isAdmin, activeCompanyCode } = useAuth();
 
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, adminOnly: false },
@@ -67,6 +68,21 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
 
         {/* User info and logout */}
         <div className="border-t border-gray-200 p-4">
+          {/* Company info for admins */}
+          {isAdmin && (
+            <div className="mb-4">
+              <CompanySelector onCompanySelect={() => setActivePage('dashboard')} />
+            </div>
+          )}
+
+          {/* Company display for users */}
+          {!isAdmin && activeCompanyCode && (
+            <div className="mb-3 px-4 py-2 bg-blue-50 rounded-lg border border-blue-200">
+              <p className="text-xs font-semibold text-gray-600">Company</p>
+              <p className="text-sm font-medium text-blue-900 truncate">{activeCompanyCode}</p>
+            </div>
+          )}
+
           <div className="mb-3 px-4 py-2 bg-gray-50 rounded-lg">
             <p className="text-xs font-semibold text-gray-600">Logged in as</p>
             <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>

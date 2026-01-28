@@ -6,6 +6,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
+from config import is_admin_company_code
 
 # Load environment variables
 load_dotenv()
@@ -26,12 +27,14 @@ class Token(BaseModel):
     user_id: int
     email: str
     role: str
+    company_code: str
 
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
     role: Optional[str] = None
+    company_code: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -58,6 +61,23 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class CompanyResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ===== Admin Code Utilities =====
+
+def is_admin(company_code: str) -> bool:
+    """Check if a company code is an admin code."""
+    return is_admin_company_code(company_code)
+
+
 # ===== Password Hashing Functions =====
 
 def hash_password(password: str) -> str:
@@ -76,6 +96,7 @@ def create_access_token(
     user_id: int,
     email: str,
     role: str,
+    company_code: str,
     expires_delta: Optional[timedelta] = None
 ) -> str:
     """Create a JWT access token."""
@@ -86,6 +107,7 @@ def create_access_token(
         "user_id": user_id,
         "email": email,
         "role": role,
+        "company_code": company_code,
         "exp": datetime.utcnow() + expires_delta
     }
     
@@ -100,10 +122,11 @@ def decode_access_token(token: str) -> Optional[TokenData]:
         user_id: int = payload.get("user_id")
         email: str = payload.get("email")
         role: str = payload.get("role")
+        company_code: str = payload.get("company_code")
         
-        if user_id is None or email is None or role is None:
+        if user_id is None or email is None or role is None or company_code is None:
             return None
         
-        return TokenData(user_id=user_id, email=email, role=role)
+        return TokenData(user_id=user_id, email=email, role=role, company_code=company_code)
     except JWTError:
         return None

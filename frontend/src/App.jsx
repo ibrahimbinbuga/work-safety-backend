@@ -14,12 +14,45 @@ import { Reporting } from './components/Reporting';
 import { Settings } from './components/Settings';
 
 function AppContent() {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, isAdmin, activeCompanyCode } = useAuth();
   const [activePage, setActivePage] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   if (!isAuthenticated) {
     return <LoginPage onLoginSuccess={() => setActivePage('dashboard')} />;
+  }
+
+  // Pages that require a company to be selected
+  const companyDependentPages = ['cameras', 'violations', 'reporting'];
+
+  // Check if current page requires company selection
+  const pageRequiresCompany = companyDependentPages.includes(activePage);
+  const noCompanySelected = isAdmin && !activeCompanyCode;
+
+  // If admin hasn't selected a company and tries to access company-dependent page, block it
+  if (pageRequiresCompany && noCompanySelected) {
+    return (
+      <div className="flex h-screen bg-gray-50 font-sans">
+        <Sidebar 
+          activePage={activePage} 
+          setActivePage={setActivePage}
+          isOpen={isSidebarOpen}
+          setIsOpen={setIsSidebarOpen}
+        />
+        
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <TopNav toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} />
+          
+          <main className="flex-1 overflow-y-auto p-4 lg:p-6">  
+            <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+          </main>
+        </div>
+      </div>
+    );
   }
 
   const renderPage = () => {

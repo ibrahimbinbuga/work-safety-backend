@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
 
 export function ModelManagement() {
+  const { isAdmin, activeCompanyCode } = useAuth();
+
   // Model yükleme ve aktif etme için state'ler
   const [modelFile, setModelFile] = useState(null);
   const [modelVersion, setModelVersion] = useState('');
@@ -174,10 +177,10 @@ export function ModelManagement() {
     }
   };
 
-  // Test detection - backend'e istek gönder
+  // Test detection - send request to backend
   const handleRunDetection = async () => {
     if (!selectedImage || !activeModelPath) {
-      alert('Lütfen resim seçin ve bir model aktif edin.');
+      alert('Please select an image and activate a model.');
       return;
     }
 
@@ -240,9 +243,9 @@ export function ModelManagement() {
           const jsonData = JSON.parse(event.target?.result);
           setMetricsFile(file);
           updateMetricsFromJSON(jsonData);
-          alert('Metrikleri başarıyla yüklendi.');
+          alert('Metrics loaded successfully.');
         } catch (err) {
-          alert('JSON dosyası hatalı. Lütfen geçerli bir JSON dosyası seçin.');
+          alert('Invalid JSON file. Please select a valid JSON file.');
           setMetricsFile(null);
         }
       };
@@ -303,6 +306,17 @@ export function ModelManagement() {
   //   { label: 'Vest Detection', value: 95.4, color: 'bg-orange-500' },
   //   { label: 'Worker Detection', value: 97.6, color: 'bg-purple-500' },
   // ];
+
+  // Admin control - must select a company before managing models
+  if (isAdmin && !activeCompanyCode) {
+    return (
+      <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">

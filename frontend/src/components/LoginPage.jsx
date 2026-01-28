@@ -119,13 +119,23 @@ export default function LoginPage({ onLoginSuccess }) {
 
         <div className="login-footer">
           <p className="test-credentials">
-            <strong>Demo Credentials:</strong>
+            <strong>📋 Test Credentials:</strong>
             <br />
-            Company: <code>COMPANY001</code>
             <br />
-            Email: <code>admin@company.com</code>
+            <em>🔑 Admin (All Companies):</em>
             <br />
-            Password: <code>admin123</code>
+            Code: <code>ADMIN</code> | Email: <code>admin@system.com</code> | Pass: <code>admin123</code>
+            <br />
+            <br />
+            <em>👤 User Examples:</em>
+            <br />
+            Company 1: <code>COMPANY001</code> | <code>user1@abc.com</code> | <code>password123</code>
+            <br />
+            Company 2: <code>COMPANY002</code> | <code>user2@xyz.com</code> | <code>password123</code>
+            <br />
+            Company 3: <code>COMPANY003</code> | <code>user3@def.com</code> | <code>password123</code>
+            <br />
+            Company 4: <code>COMPANY004</code> | <code>user4@ghi.com</code> | <code>password123</code>
           </p>
         </div>
       </div>
