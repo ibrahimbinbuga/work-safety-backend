@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, CheckCircle, Clock } from 'lucide-react';
-import axios from "axios";
+import { apiClient } from '../utils/api';
 import { useEffect } from "react";
 import { useAuth } from '../context/AuthContext';
 
@@ -77,7 +77,7 @@ export function Violations() {
 
   const fetchViolations = async () => {
     try {
-      const response = await axios.get("http://127.0.0.1:8000/api/violations");
+      const response = await apiClient.get("/api/violations");
 
       const processed = response.data.map(v => ({
         id: v.violation_id,

@@ -4,6 +4,8 @@
  * Automatically includes JWT token in Authorization header
  */
 
+import axios from 'axios';
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 /**
@@ -12,6 +14,43 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 export const getAuthToken = () => {
   return localStorage.getItem('accessToken');
 };
+
+/**
+ * Create and configure axios instance with auth interceptor
+ */
+export const apiClient = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Add request interceptor to include Authorization header
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = getAuthToken();
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Add response interceptor to handle 401 errors
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Clear auth and redirect to login
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('user');
+      localStorage.removeItem('companyCode');
+      window.location.href = '/';
+    }
+    return Promise.reject(error);
+  }
+);
 
 /**
  * Make an authenticated API request

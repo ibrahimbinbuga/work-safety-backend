@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import axios from 'axios';
+import { apiClient } from '../utils/api';
 import { Camera, Plus, Settings, Wifi, WifiOff, MoreVertical, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -12,7 +12,7 @@ export const Cameras = () => {
   const fetchCameras = async () => {
     try {
       setLoading(true);
-      const response = await axios.get('http://127.0.0.1:8000/api/cameras');
+      const response = await apiClient.get('/api/cameras');
       // Backend verisi ile UI için gerekli ek alanları birleştiriyoruz
       const processedData = response.data.map(cam => ({
         ...cam,
