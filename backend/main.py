@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer
 from fastapi.security.http import HTTPAuthorizationCredentials
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from database import engine, Base, AsyncSessionLocal, get_db
 import models
 from camera_runner import run_camera_thread, get_latest_frame, preload_model_async
@@ -248,9 +248,9 @@ async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db))
     Login endpoint: validates email, password, and company code.
     Returns JWT token if credentials are valid.
     """
-    # Find company by code
+    # Find company by code (case-insensitive)
     company_result = await db.execute(
-        select(models.Company).where(models.Company.code == login_request.company_code)
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(login_request.company_code))
     )
     company = company_result.scalar_one_or_none()
     

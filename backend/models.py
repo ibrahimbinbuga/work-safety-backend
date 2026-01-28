@@ -35,6 +35,8 @@ class User(Base):
     
     # İlişki: Kullanıcı bir şirkete aittir
     company = relationship("Company", back_populates="users")
+
+
 class Camera(Base):
     __tablename__ = "cameras"
     id = Column(Integer, primary_key=True, index=True)
@@ -72,13 +74,16 @@ class SystemLog(Base):
     uptime = Column(Float)           # %99.9
     last_check = Column(DateTime(timezone=True), server_default=func.now())
 
+
 # 4. İhlaller Tablosu
+class Violations(Base):
     __tablename__ = "violations"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     tarih_saat = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # Otomatik kayıt zamanı - CURRENT_TIMESTAMP gibi çalışır
     ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
     ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
     violation_id = Column(Integer, nullable=False)  # Worker ID olarak kullanılıyor (eski kodun mantığına uygun - manuel olarak set edilir)
+
 
 # 5. Model Meta Verileri Tablosu
 class ModelMeta(Base):
