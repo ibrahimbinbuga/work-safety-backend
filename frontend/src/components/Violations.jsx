@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, CheckCircle, Clock } from 'lucide-react';
-import axios from "axios";
+import { apiClient } from '../utils/api';
 import { useEffect } from "react";
+import { useAuth } from '../context/AuthContext';
 
 // Şimdilik statik veri (İleride Backend'den çekilecek)
 /*const initialViolations = [
@@ -65,6 +66,7 @@ import { useEffect } from "react";
 
 
 export function Violations() {
+  const { isAdmin, activeCompanyCode } = useAuth();
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
   const [violations, setViolations] = useState([]);
@@ -75,7 +77,7 @@ export function Violations() {
 
   const fetchViolations = async () => {
     try {
-      const response = await axios.get("http://127.0.0.1:8000/api/violations");
+      const response = await apiClient.get("/api/violations");
 
       const processed = response.data.map(v => ({
         id: v.violation_id,
@@ -107,6 +109,17 @@ export function Violations() {
     vest: violations.filter(v => v.type === 'vest').length,
     pending: violations.filter(v => v.status === 'pending').length
   };
+
+  // Admin control - must select a company before viewing violations
+  if (isAdmin && !activeCompanyCode) {
+    return (
+      <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">

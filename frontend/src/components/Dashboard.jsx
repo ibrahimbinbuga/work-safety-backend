@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import axios from 'axios';
+import { apiClient } from '../utils/api';
 import { Camera, Activity, AlertTriangle, CheckCircle, XCircle, MoreVertical, Shirt, HardHat } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { useAuth } from '../context/AuthContext';
 import { LiveCameraFeed } from './LiveCameraFeed';
 
 // Sistem Durumu Verisi
@@ -12,9 +13,8 @@ const systemStatus = [
   { name: 'Camera Network', status: 'online', uptime: '98.5%' },
 ];
 
-const API_BASE = 'http://127.0.0.1:8000';
-
 export function Dashboard() {
+  const { isAdmin, activeCompanyCode } = useAuth();
   const [cameras, setCameras] = useState([]);
   const [detections, setDetections] = useState([]);
   const [violations, setViolations] = useState([]);
@@ -27,9 +27,9 @@ export function Dashboard() {
       try {
         setLoading(true);
         const [camerasRes, detectionsRes, violationsRes] = await Promise.all([
-          axios.get(`${API_BASE}/api/cameras`),
-          axios.get(`${API_BASE}/api/detections`),
-          axios.get(`${API_BASE}/api/violations`),
+          apiClient.get('/api/cameras'),
+          apiClient.get('/api/detections'),
+          apiClient.get('/api/violations'),
         ]);
 
         // Camera listesini sadece ilk yüklemede set et - stream'leri kesmemek için
@@ -54,8 +54,8 @@ export function Dashboard() {
     const fetchDynamicData = async () => {
       try {
         const [detectionsRes, violationsRes] = await Promise.all([
-          axios.get(`${API_BASE}/api/detections`),
-          axios.get(`${API_BASE}/api/violations`),
+          apiClient.get('/api/detections'),
+          apiClient.get('/api/violations'),
         ]);
         
         setDetections(Array.isArray(detectionsRes.data) ? detectionsRes.data : []);
@@ -127,6 +127,17 @@ export function Dashboard() {
       change: 'Missing vest' 
     },
   ];
+
+  // Admin control - must select a company before viewing dashboard
+  if (isAdmin && !activeCompanyCode) {
+    return (
+      <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">

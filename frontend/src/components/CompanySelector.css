@@ -1,0 +1,127 @@
+/* frontend/src/components/CompanySelector.css */
+
+.company-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.selector-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.selector-content label {
+  font-weight: 600;
+  color: #374151;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.selector-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.company-select {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  background-color: white;
+  font-size: 0.875rem;
+  color: #111827;
+  cursor: pointer;
+  width: 100%;
+  transition: border-color 0.2s;
+}
+
+.company-select:hover:not(:disabled) {
+  border-color: #9ca3af;
+}
+
+.company-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.company-select:disabled {
+  background-color: #f3f4f6;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.select-button {
+  padding: 0.5rem 1rem;
+  background-color: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s, opacity 0.2s;
+  width: 100%;
+}
+
+.select-button:hover:not(:disabled) {
+  background-color: #2563eb;
+}
+
+.select-button:active:not(:disabled) {
+  background-color: #1d4ed8;
+}
+
+.select-button:disabled {
+  background-color: #d1d5db;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.loading-spinner {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.error-text {
+  color: #dc2626;
+  font-size: 0.75rem;
+}
+
+.current-company {
+  padding: 0.5rem 0.75rem;
+  background-color: #dbeafe;
+  border: 1px solid #93c5fd;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  color: #1e40af;
+  margin-top: 0.5rem;
+}
+
+.current-company span {
+  font-weight: 500;
+}
+
+.user-company-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.user-company-info label {
+  font-weight: 600;
+  color: #374151;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.user-company-display {
+  font-weight: 700;
+  font-size: 1rem;
+  color: #1f2937;
+}

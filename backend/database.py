@@ -18,14 +18,22 @@ DB_NAME = os.getenv("DB_NAME", "safety_analysis_db")
 # 3. URL'yi oluştur
 DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-# Motoru oluştur
-engine = create_async_engine(DATABASE_URL, echo=True)
+# Motoru oluştur - connection pool settings
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,  # Log'u kapat
+    pool_size=20,
+    max_overflow=0,
+    pool_pre_ping=True,  # Connection health check
+    pool_recycle=3600  # Recycle connections every hour
+)
 
 # Oturum Oluşturucu
 AsyncSessionLocal = sessionmaker(
     bind=engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
+    future=True
 )
 
 Base = declarative_base()

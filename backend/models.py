@@ -1,11 +1,42 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Sequence, Computed
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Sequence, Computed, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
+import enum
 
 # It is used to define the tables for the database
 
-# 1. Kameralar Tablosu
+# Role Enum
+class RoleEnum(str, enum.Enum):
+    admin = "admin"
+    user = "user"
+
+# 1. Şirket Tablosu
+class Company(Base):
+    __tablename__ = "companies"
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, unique=True, index=True, nullable=False)  # Şirket kodu (örn: "COMPANY001")
+    name = Column(String, nullable=False)  # Şirket adı
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # İlişki: Bir şirketin birden çok kullanıcısı olabilir
+    users = relationship("User", back_populates="company")
+
+# 2. Kullanıcılar Tablosu (Güncellendi)
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    role = Column(Enum(RoleEnum), default=RoleEnum.user, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # İlişki: Kullanıcı bir şirkete aittir
+    company = relationship("Company", back_populates="users")
+
+
 class Camera(Base):
     __tablename__ = "cameras"
     id = Column(Integer, primary_key=True, index=True)
@@ -13,16 +44,19 @@ class Camera(Base):
     location = Column(String)        # Örn: "Bölge 1"
     rtsp_url = Column(String)        # Kamera IP Adresi
     status = Column(String)          # online, offline
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Kamera hangi şirkete ait
     last_active = Column(DateTime(timezone=True), onupdate=func.now())
     
     # İlişki: Bir kameranın birden çok tespiti olabilir
     detections = relationship("Detection", back_populates="camera")
+    company = relationship("Company")
 
 # 2. Tespitler (İhlaller) Tablosu
 class Detection(Base):
     __tablename__ = "detections"
     id = Column(Integer, primary_key=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"))
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Tespit hangi şirkete ait
     
     detection_type = Column(String)  # no_helmet, no_vest
     confidence = Column(Float)       # 0.95
@@ -33,6 +67,7 @@ class Detection(Base):
 
     # İlişki: Tespit bir kameraya aittir
     camera = relationship("Camera", back_populates="detections")
+    company = relationship("Company")
 
 # 3. Sistem Sağlığı Tablosu
 class SystemLog(Base):
@@ -43,20 +78,19 @@ class SystemLog(Base):
     uptime = Column(Float)           # %99.9
     last_check = Column(DateTime(timezone=True), server_default=func.now())
 
-# 4. Kullanıcılar (Opsiyonel - Login için)
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
 
-class Violation(Base):
+# 4. İhlaller Tablosu
+class Violations(Base):
     __tablename__ = "violations"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     tarih_saat = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # Otomatik kayıt zamanı - CURRENT_TIMESTAMP gibi çalışır
     ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
     ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
     violation_id = Column(Integer, nullable=False)  # Worker ID olarak kullanılıyor (eski kodun mantığına uygun - manuel olarak set edilir)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # İhlal hangi şirkete ait
+    
+    company = relationship("Company")
+
 
 # 5. Model Meta Verileri Tablosu
 class ModelMeta(Base):
