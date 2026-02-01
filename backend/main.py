@@ -946,8 +946,12 @@ async def startup_event():
     global main_loop, violation_queue, consumer_task
     
     # Tüm tabloları oluştur (özellikle models tablosu için)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        print(f"Warning: Database initialization failed: {e}")
+        print("This may be expected if running without database connection initially")
     
     # AsyncIO loop'u global'e kaydet
     main_loop = asyncio.get_event_loop()

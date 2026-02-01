@@ -19,13 +19,20 @@ DB_NAME = os.getenv("DB_NAME", "safety_analysis_db")
 DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # Motoru oluştur - connection pool settings
+# Supabase requires SSL connection
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,  # Log'u kapat
     pool_size=20,
     max_overflow=0,
     pool_pre_ping=True,  # Connection health check
-    pool_recycle=3600  # Recycle connections every hour
+    pool_recycle=3600,  # Recycle connections every hour
+    connect_args={
+        "ssl": "allow",
+        "timeout": 60,
+        "command_timeout": 60,
+        "server_settings": {"application_name": "work_safety_backend"}
+    }
 )
 
 # Oturum Oluşturucu
