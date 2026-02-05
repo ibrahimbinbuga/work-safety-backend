@@ -8,6 +8,7 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, adminOnly: false },
     { id: 'cameras', label: 'Cameras', icon: Camera, adminOnly: false },
+    { id: 'models', label: 'Models', icon: BrainCircuit, adminOnly: true },
     { id: 'model', label: 'Model Management', icon: BrainCircuit, adminOnly: true },
     { id: 'violations', label: 'Violations', icon: AlertTriangle, adminOnly: false },
     { id: 'reporting', label: 'Reporting', icon: FileText, adminOnly: false },

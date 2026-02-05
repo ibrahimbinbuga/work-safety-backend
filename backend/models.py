@@ -21,6 +21,8 @@ class Company(Base):
     
     # İlişki: Bir şirketin birden çok kullanıcısı olabilir
     users = relationship("User", back_populates="company")
+    # İlişki: Bir şirketin birden çok modeli olabilir
+    models = relationship("CompanyModel", back_populates="company")
 
 # 2. Kullanıcılar Tablosu (Güncellendi)
 class User(Base):
@@ -101,3 +103,20 @@ class ModelMeta(Base):
     description = Column(String)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, default=False)
+    
+    # İlişki: Bir modelin birden çok şirkete ataması olabilir
+    company_assignments = relationship("CompanyModel", back_populates="model")
+
+
+# 6. Şirket-Model İlişki Tablosu (Many-to-Many)
+class CompanyModel(Base):
+    __tablename__ = "company_models"
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
+    is_active = Column(Boolean, default=False)  # Bu company için model aktif mi?
+    enabled_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # İlişkiler
+    company = relationship("Company", back_populates="models")
+    model = relationship("ModelMeta", back_populates="company_assignments")

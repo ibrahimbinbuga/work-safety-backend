@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 // Diğer bileşenler henüz boşsa hata vermemesi için basitçe import edelim
 // Eğer yukarıdaki 4. adımı yaptıysan bu importları açabilirsin:
 import { Cameras } from './components/Cameras';
+import { Models } from './components/Models';
 import { ModelManagement } from './components/ModelManagement'; 
 import { Violations } from './components/Violations';
 import { Reporting } from './components/Reporting';
@@ -59,6 +60,7 @@ function AppContent() {
     switch (activePage) {
       case 'dashboard': return <Dashboard />;
       case 'cameras': return <Cameras />;
+      case 'models': return user?.role === 'admin' ? <Models /> : <Dashboard />;
       case 'model': return user?.role === 'admin' ? <ModelManagement /> : <Dashboard />;
       case 'violations': return <Violations />;
       case 'reporting': return <Reporting />;

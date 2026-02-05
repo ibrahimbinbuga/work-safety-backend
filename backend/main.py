@@ -941,6 +941,243 @@ async def get_models(current_user: TokenData = Depends(get_current_user)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
 
+# ===== Company Model Management Endpoints =====
+
+@app.get("/api/company/{company_code}/models")
+async def get_company_models(
+    company_code: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Belirli bir company için atanan modelleri döndürür.
+    Admin tüm şirketlere, regular users kendi şirketlerine erişebilir.
+    """
+    # Company access kontrolü
+    await verify_company_access(current_user, company_code)
+    
+    try:
+        # Company'yi bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        # Company'nin modellerini getir
+        result = await db.execute(
+            select(models.CompanyModel)
+            .where(models.CompanyModel.company_id == company.id)
+            .join(models.ModelMeta)
+            .order_by(models.ModelMeta.version.desc())
+        )
+        company_models = result.scalars().all()
+        
+        # Response oluştur
+        response = []
+        for cm in company_models:
+            response.append({
+                "id": cm.id,
+                "model_id": cm.model_id,
+                "company_id": cm.company_id,
+                "is_active": cm.is_active,
+                "enabled_at": cm.enabled_at.isoformat() if cm.enabled_at else "",
+                "model": {
+                    "id": cm.model.id,
+                    "path": cm.model.path,
+                    "version": cm.model.version,
+                    "description": cm.model.description,
+                    "uploaded_at": cm.model.uploaded_at.isoformat() if cm.model.uploaded_at else "",
+                }
+            })
+        
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
+
+
+@app.post("/api/company/{company_code}/models/{model_id}/assign")
+async def assign_model_to_company(
+    company_code: str,
+    model_id: int,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Bir modeli bir şirkete atar. (Admin only)
+    """
+    try:
+        # Company ve Model'i bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        model_result = await db.execute(
+            select(models.ModelMeta).where(models.ModelMeta.id == model_id)
+        )
+        model = model_result.scalars().first()
+        if not model:
+            raise HTTPException(status_code=404, detail="Model bulunamadı")
+        
+        # Zaten atanmış mı kontrol et
+        existing = await db.execute(
+            select(models.CompanyModel)
+            .where(
+                (models.CompanyModel.company_id == company.id) &
+                (models.CompanyModel.model_id == model_id)
+            )
+        )
+        if existing.scalars().first():
+            raise HTTPException(status_code=409, detail="Model zaten bu şirkete atanmış")
+        
+        # Yeni atama oluştur
+        company_model = models.CompanyModel(
+            company_id=company.id,
+            model_id=model_id,
+            is_active=False
+        )
+        db.add(company_model)
+        await db.commit()
+        
+        return {
+            "status": "success",
+            "message": f"Model {model.version} şirkete {company.name} atandı"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model atama hatası: {str(e)}")
+
+
+@app.post("/api/company/{company_code}/models/{company_model_id}/activate")
+async def activate_model_for_company(
+    company_code: str,
+    company_model_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Belirli bir company için modeli aktifleştir.
+    Aynı anda sadece bir model aktif olabilir.
+    """
+    # Company access kontrolü
+    await verify_company_access(current_user, company_code)
+    
+    try:
+        # Company'yi bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        # CompanyModel'i bul (model relationship ile)
+        cm_result = await db.execute(
+            select(models.CompanyModel)
+            .where(
+                (models.CompanyModel.id == company_model_id) &
+                (models.CompanyModel.company_id == company.id)
+            )
+        )
+        company_model = cm_result.scalars().first()
+        if not company_model:
+            raise HTTPException(status_code=404, detail="Model ataması bulunamadı")
+        
+        # Aynı şirketteki diğer aktif modelleri pasif yap
+        await db.execute(
+            update(models.CompanyModel)
+            .where(
+                (models.CompanyModel.company_id == company.id) &
+                (models.CompanyModel.is_active == True)
+            )
+            .values(is_active=False)
+        )
+        
+        # Bu modeli aktif yap
+        company_model.is_active = True
+        await db.commit()
+        
+        # Model yolunu al ve aktif model path'i güncelle
+        model_path = company_model.model.path
+        set_active_model_path(model_path)
+        
+        return {
+            "status": "success",
+            "message": f"Model {company_model.model.version} şirkete {company.name} aktifleştirildi"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model aktivasyon hatası: {str(e)}")
+
+
+@app.post("/api/company/{company_code}/models/{company_model_id}/deactivate")
+async def deactivate_model_for_company(
+    company_code: str,
+    company_model_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Belirli bir company için modeli deaktifleştir.
+    """
+    # Company access kontrolü
+    await verify_company_access(current_user, company_code)
+    
+    try:
+        # Company'yi bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        # CompanyModel'i bul
+        cm_result = await db.execute(
+            select(models.CompanyModel)
+            .where(
+                (models.CompanyModel.id == company_model_id) &
+                (models.CompanyModel.company_id == company.id)
+            )
+        )
+        company_model = cm_result.scalars().first()
+        if not company_model:
+            raise HTTPException(status_code=404, detail="Model ataması bulunamadı")
+        
+        # Modeli deaktif yap
+        company_model.is_active = False
+        await db.commit()
+        
+        set_active_model_path("")
+        
+        return {
+            "status": "success",
+            "message": f"Model {company_model.model.version} deaktifleştirildi"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model deaktivasyonu hatası: {str(e)}")
+
 @app.on_event("startup")
 async def startup_event():
     global main_loop, violation_queue, consumer_task
