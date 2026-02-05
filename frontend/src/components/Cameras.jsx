@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { apiClient } from '../utils/api';
-import { Camera, Plus, Settings, Wifi, WifiOff, MoreVertical, RefreshCw } from 'lucide-react';
+import { Camera, Plus, Wifi, WifiOff, MoreVertical, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export const Cameras = () => {
@@ -12,13 +12,22 @@ export const Cameras = () => {
   const fetchCameras = async () => {
     try {
       setLoading(true);
-      const response = await apiClient.get('/api/cameras');
+      if (isAdmin && !activeCompanyCode) {
+        setCameras([]);
+        setLoading(false);
+        return;
+      }
+      const endpoint = activeCompanyCode
+        ? `/api/company/${activeCompanyCode}/model-cameras`
+        : '/api/cameras';
+      const response = await apiClient.get(endpoint);
       // Backend verisi ile UI için gerekli ek alanları birleştiriyoruz
       const processedData = response.data.map(cam => ({
         ...cam,
         lastDetection: '2 dk önce' // Backend'den gelmediği için şimdilik statik
       }));
       setCameras(processedData);
+
     } catch (error) {
       console.error("Kamera verisi çekilemedi:", error);
     } finally {
@@ -31,7 +40,9 @@ export const Cameras = () => {
     // 10 saniyede bir güncelle
     const interval = setInterval(fetchCameras, 10000); 
     return () => clearInterval(interval);
-  }, []);
+  }, [activeCompanyCode]);
+
+
 
   // Admin control - must select a company before viewing cameras
   if (isAdmin && !activeCompanyCode) {
@@ -163,10 +174,24 @@ export const Cameras = () => {
                             <span className="text-gray-400 text-xs">{camera.lastDetection}</span>
                         </div>
 
-                        <button className="w-full flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-700 py-2 rounded-lg text-sm font-medium transition-colors">
-                            <Settings className="w-4 h-4" />
-                            Settings
-                        </button>
+
+                        <div className="w-full border border-gray-200 px-3 py-2 rounded-lg text-sm">
+                          <p className="text-gray-600 text-xs font-semibold">Active Models</p>
+                          {camera.active_models && camera.active_models.length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {camera.active_models.map((model) => (
+                                <span
+                                  key={model.id}
+                                  className="px-2 py-1 text-xs rounded-full bg-green-50 text-green-700 border border-green-100"
+                                >
+                                  {model.name} ({model.version})
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-2 text-xs text-gray-400">No active models</p>
+                          )}
+                        </div>
                     </div>
                 </div>
             </div>

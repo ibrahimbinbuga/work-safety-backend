@@ -3,6 +3,7 @@ import threading
 import time
 import os
 import cv2
+from typing import Optional
 from ultralytics import YOLO
 from state_control import StateController
 
@@ -70,7 +71,7 @@ def preload_model_async(model_path: str):
     print(f"[preload_model_async] Background model loading started for: {model_path}")
     return False
 
-def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, violation_queue, stop_event: threading.Event, debug: bool = False):
+def run_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str], loop, violation_queue, stop_event: threading.Event, debug: bool = False):
     """
     Blocking function intended to run in a separate thread.
     - loop: asyncio loop from the main app
@@ -94,15 +95,20 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: str, loop, viol
     model = None
     use_model = False
     
-    try:
-        print(f"[CameraRunner][Camera {camera_id}] Model'i yüklüyoruz: {model_path}")
-        # İlk yükleme denemesi - eğer cache'de varsa hemen dönecek
-        model = get_model(model_path)
-        use_model = True
-        print(f"[CameraRunner][Camera {camera_id}] ✅ Model yüklendi!")
-    except Exception as e:
-        print(f"[CameraRunner][Camera {camera_id}] Model loading failed: {e}")
-        print(f"[CameraRunner][Camera {camera_id}] Continuing without model (raw camera feed only)")
+    if model_path:
+        try:
+            print(f"[CameraRunner][Camera {camera_id}] Model'i yüklüyoruz: {model_path}")
+            # İlk yükleme denemesi - eğer cache'de varsa hemen dönecek
+            model = get_model(model_path)
+            use_model = True
+            print(f"[CameraRunner][Camera {camera_id}] ✅ Model yüklendi!")
+        except Exception as e:
+            print(f"[CameraRunner][Camera {camera_id}] Model loading failed: {e}")
+            print(f"[CameraRunner][Camera {camera_id}] Continuing without model (raw camera feed only)")
+            model = None
+            use_model = False
+    else:
+        print(f"[CameraRunner][Camera {camera_id}] Model disabled for this camera, running raw feed only")
         model = None
         use_model = False
     

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Sequence, Computed, Enum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Sequence, Computed, Enum, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -23,6 +23,9 @@ class Company(Base):
     users = relationship("User", back_populates="company")
     # İlişki: Bir şirketin birden çok modeli olabilir
     models = relationship("CompanyModel", back_populates="company")
+    # İlişki: Bir şirketin kameraları için model aktiflik durumu
+    model_cameras = relationship("CompanyModelCamera", back_populates="company")
+    general_models = relationship("CompanyGeneralModel", back_populates="company")
 
 # 2. Kullanıcılar Tablosu (Güncellendi)
 class User(Base):
@@ -52,6 +55,7 @@ class Camera(Base):
     # İlişki: Bir kameranın birden çok tespiti olabilir
     detections = relationship("Detection", back_populates="camera")
     company = relationship("Company")
+    model_assignments = relationship("CompanyModelCamera", back_populates="camera")
 
 # 2. Tespitler (İhlaller) Tablosu
 class Detection(Base):
@@ -120,3 +124,52 @@ class CompanyModel(Base):
     # İlişkiler
     company = relationship("Company", back_populates="models")
     model = relationship("ModelMeta", back_populates="company_assignments")
+
+
+# 7. General Model (Tek model metadata)
+class GeneralModel(Base):
+    __tablename__ = "general_models"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    path = Column(String, nullable=False)
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, default=True)
+    model_cameras = relationship("CompanyModelCamera", back_populates="model")
+    company_assignments = relationship("CompanyGeneralModel", back_populates="model")
+
+
+# 7.1 Şirket - General Model İlişki Tablosu
+class CompanyGeneralModel(Base):
+    __tablename__ = "company_general_models"
+    __table_args__ = (
+        UniqueConstraint("company_id", "model_id", name="uq_company_general_model"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    model_id = Column(Integer, ForeignKey("general_models.id"), nullable=False)
+    is_enabled = Column(Boolean, default=True)
+    enabled_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    company = relationship("Company", back_populates="general_models")
+    model = relationship("GeneralModel", back_populates="company_assignments")
+
+
+# 8. Şirket - Kamera - Model (tek genel model için)
+class CompanyModelCamera(Base):
+    __tablename__ = "company_model_cameras"
+    __table_args__ = (
+        UniqueConstraint("company_id", "camera_id", "model_id", name="uq_company_camera_model"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False)
+    model_id = Column(Integer, ForeignKey("general_models.id"), nullable=False)
+    is_active = Column(Boolean, default=True)
+
+    company = relationship("Company", back_populates="model_cameras")
+    camera = relationship("Camera", back_populates="model_assignments")
+    model = relationship("GeneralModel", back_populates="model_cameras")

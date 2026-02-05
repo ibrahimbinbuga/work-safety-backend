@@ -6,41 +6,38 @@ export function Models() {
 
   // Model yükleme state'leri
   const [modelFile, setModelFile] = useState(null);
+  const [modelName, setModelName] = useState('');
   const [modelVersion, setModelVersion] = useState('');
   const [modelDesc, setModelDesc] = useState('');
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef();
 
-  // Modelleri listele state'leri
-  const [allModels, setAllModels] = useState([]);
+  // General models list
+  const [generalModels, setGeneralModels] = useState([]);
   const [loading, setLoading] = useState(false);
 
   // Metrikleri yönet state'leri
   const [metricsFile, setMetricsFile] = useState(null);
   const metricsFileInputRef = useRef();
 
-  // Modelleri yükle
+  // General models yükle
   useEffect(() => {
-    fetchModels();
+    fetchGeneralModels();
   }, []);
 
-  const fetchModels = async () => {
+  const fetchGeneralModels = async () => {
     if (!token) return;
     
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/models', {
+      const res = await fetch('http://localhost:8000/api/general-models', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
-      if (Array.isArray(data)) {
-        setAllModels(data);
-      } else {
-        setAllModels([]);
-      }
+      setGeneralModels(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.error('Error loading models:', err);
-      setAllModels([]);
+      console.error('Error loading general models:', err);
+      setGeneralModels([]);
     }
     setLoading(false);
   };
@@ -68,8 +65,8 @@ export function Models() {
   };
 
   const handleModelUpload = async () => {
-    if (!modelFile || !modelVersion) {
-      alert('Please select a model file and enter a version.');
+    if (!modelFile || !modelVersion || !modelName) {
+      alert('Please select a model file, enter a name, and enter a version.');
       return;
     }
 
@@ -81,11 +78,12 @@ export function Models() {
     setUploading(true);
     const formData = new FormData();
     formData.append('file', modelFile);
+    formData.append('name', modelName);
     formData.append('version', modelVersion);
     formData.append('description', modelDesc);
 
     try {
-      const res = await fetch('http://localhost:8000/api/model/upload', {
+      const res = await fetch('http://localhost:8000/api/general-model/upload', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
@@ -100,14 +98,15 @@ export function Models() {
       if (data.status === 'success') {
         alert('Model uploaded successfully!');
         setModelFile(null);
+        setModelName('');
         setModelVersion('');
         setModelDesc('');
         setMetricsFile(null);
         if (fileInputRef.current) fileInputRef.current.value = '';
         if (metricsFileInputRef.current) metricsFileInputRef.current.value = '';
         
-        // Yeni modelleri yükle
-        await fetchModels();
+        // Güncel model listesini yükle
+        await fetchGeneralModels();
       }
     } catch (err) {
       alert('Upload error: ' + err.message);
@@ -132,8 +131,8 @@ export function Models() {
   return (
     <div className="space-y-6 p-6">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Model Management</h1>
-        <p className="text-gray-600 mt-2">Upload and manage AI models globally. Models can then be assigned to specific companies.</p>
+        <h1 className="text-3xl font-bold text-gray-900">General Model Management</h1>
+        <p className="text-gray-600 mt-2">Upload and manage multiple detection models. Admin only.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -173,6 +172,18 @@ export function Models() {
                   onChange={handleModelFileChange}
                 />
               </div>
+            </div>
+
+            {/* Version Input */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Model Name</label>
+              <input
+                type="text"
+                placeholder="e.g., PPE Detection"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                value={modelName}
+                onChange={e => setModelName(e.target.value)}
+              />
             </div>
 
             {/* Version Input */}
@@ -227,7 +238,7 @@ export function Models() {
             <button
               className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold disabled:bg-gray-300 disabled:cursor-not-allowed transition"
               onClick={handleModelUpload}
-              disabled={uploading || !modelFile || !modelVersion}
+              disabled={uploading || !modelFile || !modelVersion || !modelName}
             >
               {uploading ? (
                 <span className="flex items-center justify-center">
@@ -244,105 +255,56 @@ export function Models() {
           </div>
         </div>
 
-        {/* Models Summary */}
+        {/* General Models List */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Stats</h3>
-          <div className="space-y-4">
-            <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
-              <p className="text-gray-600 text-sm">Total Models</p>
-              <p className="text-3xl font-bold text-blue-600">{allModels.length}</p>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Uploaded Models</h3>
+          {loading ? (
+            <div className="text-gray-500">Loading...</div>
+          ) : generalModels.length === 0 ? (
+            <div className="text-gray-500">No models uploaded yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-200">
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Name</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Version</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Description</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Uploaded</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {generalModels.map((model) => (
+                    <tr key={model.id} className="border-b border-gray-100 hover:bg-gray-50 transition">
+                      <td className="py-3 px-4 text-sm font-medium text-gray-900">{model.name}</td>
+                      <td className="py-3 px-4 text-sm text-gray-700">{model.version}</td>
+                      <td className="py-3 px-4 text-sm text-gray-600">{model.description || '-'}</td>
+                      <td className="py-3 px-4 text-sm text-gray-500">
+                        {model.uploaded_at ? new Date(model.uploaded_at).toLocaleDateString('tr-TR') : 'N/A'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
-              <p className="text-gray-600 text-sm">Latest Upload</p>
-              <p className="text-lg font-semibold text-green-600">
-                {allModels.length > 0 
-                  ? new Date(allModels[0].uploaded_at).toLocaleDateString('tr-TR')
-                  : 'No models yet'}
-              </p>
-            </div>
-            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-              <p className="text-gray-700 text-sm font-medium">ℹ️ Models can be assigned to companies from the Model Assignment page after upload.</p>
-            </div>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Models List */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold text-gray-900">All Uploaded Models</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">Notes</h3>
           <button
-            onClick={fetchModels}
+            onClick={fetchGeneralModels}
             className="text-sm px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
             disabled={loading}
           >
             {loading ? 'Loading...' : 'Refresh'}
           </button>
         </div>
-
-        {loading ? (
-          <div className="text-center py-12">
-            <div className="animate-spin inline-block w-8 h-8 border-4 border-gray-300 border-t-blue-600 rounded-full"></div>
-            <p className="text-gray-500 mt-4">Loading models...</p>
-          </div>
-        ) : allModels.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-200">
-                  <th className="text-left py-3 px-4 font-semibold text-gray-700">Version</th>
-                  <th className="text-left py-3 px-4 font-semibold text-gray-700">Description</th>
-                  <th className="text-left py-3 px-4 font-semibold text-gray-700">Uploaded</th>
-                  <th className="text-left py-3 px-4 font-semibold text-gray-700">Path</th>
-                  <th className="text-left py-3 px-4 font-semibold text-gray-700">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {allModels.map((model, idx) => (
-                  <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50 transition">
-                    <td className="py-4 px-4">
-                      <span className="font-semibold text-gray-900">{model.version}</span>
-                    </td>
-                    <td className="py-4 px-4">
-                      <span className="text-gray-600 text-sm">{model.description || '-'}</span>
-                    </td>
-                    <td className="py-4 px-4">
-                      <span className="text-gray-500 text-sm">
-                        {new Date(model.uploaded_at).toLocaleDateString('tr-TR')}
-                      </span>
-                    </td>
-                    <td className="py-4 px-4">
-                      <code className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded break-all">
-                        {model.path.split('/').pop()}
-                      </code>
-                    </td>
-                    <td className="py-4 px-4">
-                      {model.is_active ? (
-                        <span className="inline-flex items-center gap-1 px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">
-                          <span className="w-2 h-2 bg-green-600 rounded-full"></span>
-                          Active
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-xs font-semibold">
-                          <span className="w-2 h-2 bg-gray-400 rounded-full"></span>
-                          Inactive
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-12 bg-gray-50 rounded-lg">
-            <svg className="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <p className="text-gray-500 font-medium">No models uploaded yet</p>
-            <p className="text-gray-400 text-sm mt-2">Upload your first model using the form above</p>
-          </div>
-        )}
+        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+          <p className="text-gray-700 text-sm font-medium">ℹ️ Models can be assigned per company in Model Camera Assignment.</p>
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, CheckCircle, Clock } from 'lucide-react';
-import { apiClient } from '../utils/api';
+import { apiClient, addCompanyCodeToUrl } from '../utils/api';
 import { useEffect } from "react";
 import { useAuth } from '../context/AuthContext';
 
@@ -73,11 +73,12 @@ export function Violations() {
 
   useEffect(() => {
     fetchViolations();
-  }, []);
+  }, [activeCompanyCode]);
 
   const fetchViolations = async () => {
     try {
-      const response = await apiClient.get("/api/violations");
+      const violationsUrl = addCompanyCodeToUrl('/api/violations', activeCompanyCode);
+      const response = await apiClient.get(violationsUrl);
 
       const processed = response.data.map(v => ({
         id: v.violation_id,

@@ -9,7 +9,8 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 // Eğer yukarıdaki 4. adımı yaptıysan bu importları açabilirsin:
 import { Cameras } from './components/Cameras';
 import { Models } from './components/Models';
-import { ModelManagement } from './components/ModelManagement'; 
+import { Companies } from './components/Companies';
+import { ModelCameraAssignment } from './components/ModelCameraAssignment';
 import { Violations } from './components/Violations';
 import { Reporting } from './components/Reporting';
 import { Settings } from './components/Settings';
@@ -24,7 +25,7 @@ function AppContent() {
   }
 
   // Pages that require a company to be selected
-  const companyDependentPages = ['cameras', 'violations', 'reporting'];
+  const companyDependentPages = ['cameras', 'violations', 'reporting', 'model-camera-assignment'];
 
   // Check if current page requires company selection
   const pageRequiresCompany = companyDependentPages.includes(activePage);
@@ -61,7 +62,8 @@ function AppContent() {
       case 'dashboard': return <Dashboard />;
       case 'cameras': return <Cameras />;
       case 'models': return user?.role === 'admin' ? <Models /> : <Dashboard />;
-      case 'model': return user?.role === 'admin' ? <ModelManagement /> : <Dashboard />;
+      case 'companies': return user?.role === 'admin' ? <Companies /> : <Dashboard />;
+      case 'model-camera-assignment': return <ModelCameraAssignment />;
       case 'violations': return <Violations />;
       case 'reporting': return <Reporting />;
       case 'settings': return <Settings />;
