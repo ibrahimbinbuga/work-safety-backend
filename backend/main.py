@@ -133,6 +133,7 @@ async def save_violation_async(payload: dict):
     """
     Save the payload as Detection (and Violation) to DB using AsyncSession.
     Eski db_config.py'deki save_violation fonksiyonunun mantığına uygun olarak yazıldı.
+    Detection.company_id is set from the camera's company_id.
     
     Args:
         payload: dict containing:
@@ -143,16 +144,28 @@ async def save_violation_async(payload: dict):
     """
     async with AsyncSessionLocal() as session:
         try:
+            camera_id = payload.get('camera_id')
+            if camera_id is not None:
+                cam = await session.get(models.Camera, camera_id)
+                if cam is None or cam.company_id is None:
+                    print(f"[consumer] ⚠️ Camera {camera_id} has no company_id, skipping violation save")
+                    return
+                company_id = cam.company_id
+            else:
+                print(f"[consumer] ⚠️ payload has no camera_id, skipping violation save")
+                return
+
             # Create Detection rows for each violation type (head/vest etc.)
             for v in payload.get('violations', []):
                 # Validate violation type (eski kodun mantığına uygun)
                 if v not in ['head', 'vest']:
                     print(f"[consumer] Invalid violation type: {v}, skipping...")
                     continue
-                
-                # Create Detection record
-                det = models.Detection(  # In models.py, we have defined the Detection class and the add method is used to add the detection to the database
-                    camera_id=payload.get('camera_id'),
+
+                # Create Detection record (company_id from camera)
+                det = models.Detection(
+                    camera_id=camera_id,
+                    company_id=company_id,
                     detection_type=v,
                     confidence=None,
                     is_violation=True,
@@ -170,10 +183,11 @@ async def save_violation_async(payload: dict):
                 
                 violation_area = str(payload.get('camera_id')) if payload.get('camera_id') is not None else None  # ihlal_yapilan_bolge (optional, can be None)
                 
-                vio = models.Violation(  # In models.py, we have defined the Violation class and the add method is used to add the violation to the database
-                    ihlal_cesidi=v,  # violation_type: 'head' or 'vest'
-                    ihlal_yapilan_bolge=violation_area,  # violation_area: optional area where violation occurred
-                    violation_id=int(worker_id)  # violation_id: The worker/violation ID (int, required - eski kodun mantığına uygun)
+                vio = models.Violation(
+                    company_id=company_id,
+                    ihlal_cesidi=v,
+                    ihlal_yapilan_bolge=violation_area,
+                    violation_id=int(worker_id),
                 )
                 session.add(vio)
 
