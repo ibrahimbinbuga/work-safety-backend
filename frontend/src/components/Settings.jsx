@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { Bell, Mail, Smartphone, Camera, Users, Shield, Moon, Sun, Save } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export function Settings() {
+  const { isAdmin, activeCompanyCode } = useAuth();
   const [activeTab, setActiveTab] = useState('notifications');
   const [isDarkMode, setIsDarkMode] = useState(false);
   
@@ -23,6 +25,17 @@ export function Settings() {
       }`} />
     </button>
   );
+
+  // Admin control - must select a company before viewing settings
+  if (isAdmin && !activeCompanyCode) {
+    return (
+      <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">

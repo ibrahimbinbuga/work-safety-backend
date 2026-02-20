@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import axios from 'axios';
+import { apiClient } from '../utils/api';
 import { Camera, Plus, Settings, Wifi, WifiOff, MoreVertical, RefreshCw } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export const Cameras = () => {
+  const { isAdmin, activeCompanyCode } = useAuth();
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -10,7 +12,7 @@ export const Cameras = () => {
   const fetchCameras = async () => {
     try {
       setLoading(true);
-      const response = await axios.get('http://127.0.0.1:8000/api/cameras');
+      const response = await apiClient.get('/api/cameras');
       // Backend verisi ile UI için gerekli ek alanları birleştiriyoruz
       const processedData = response.data.map(cam => ({
         ...cam,
@@ -30,6 +32,17 @@ export const Cameras = () => {
     const interval = setInterval(fetchCameras, 10000); 
     return () => clearInterval(interval);
   }, []);
+
+  // Admin control - must select a company before viewing cameras
+  if (isAdmin && !activeCompanyCode) {
+    return (
+      <div className="space-y-6 p-6">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">
