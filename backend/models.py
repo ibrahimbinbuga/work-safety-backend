@@ -21,6 +21,9 @@ class Company(Base):
     
     # İlişki: Bir şirketin birden çok kullanıcısı olabilir
     users = relationship("User", back_populates="company")
+    # İlişki: Bir şirketin birden çok modeli olabilir
+    models = relationship("CompanyModel", back_populates="company")
+
 
 # 2. Kullanıcılar Tablosu (Güncellendi)
 class User(Base):
@@ -32,7 +35,7 @@ class User(Base):
     role = Column(Enum(RoleEnum), default=RoleEnum.user, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)  # Şirket (company) ilişkisi
     # İlişki: Kullanıcı bir şirkete aittir
     company = relationship("Company", back_populates="users")
 
@@ -57,8 +60,8 @@ class Detection(Base):
     __tablename__ = "detections"
     id = Column(Integer, primary_key=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"))
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Tespit hangi şirkete ait
-    
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Kameradan alınır
+
     detection_type = Column(String)  # no_helmet, no_vest
     confidence = Column(Float)       # 0.95
     is_violation = Column(Boolean)   # True
@@ -89,7 +92,6 @@ class Violations(Base):
     ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
     ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
     violation_id = Column(Integer, nullable=False)  # Worker ID olarak kullanılıyor (eski kodun mantığına uygun - manuel olarak set edilir)
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # İhlal hangi şirkete ait
     
     company = relationship("Company")
 
@@ -103,3 +105,20 @@ class ModelMeta(Base):
     description = Column(String)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, default=False)
+    
+    # İlişki: Bir modelin birden çok şirkete ataması olabilir
+    company_assignments = relationship("CompanyModel", back_populates="model")
+
+
+# 6. Şirket-Model İlişki Tablosu (Many-to-Many)
+class CompanyModel(Base):
+    __tablename__ = "company_models"
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
+    is_active = Column(Boolean, default=False)  # Bu company için model aktif mi?
+    enabled_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # İlişkiler
+    company = relationship("Company", back_populates="models")
+    model = relationship("ModelMeta", back_populates="company_assignments")

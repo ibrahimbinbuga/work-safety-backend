@@ -41,31 +41,14 @@ AsyncSessionLocal = sessionmaker(
 COMPANIES = [
     {"code": "ADMIN", "name": "System Admin", "is_admin": True},
     {"code": "COMPANY001", "name": "ABC İnşaat", "is_admin": False},
-    {"code": "COMPANY002", "name": "XYZ Fabrika", "is_admin": False},
-    {"code": "COMPANY003", "name": "DEF Lojistik", "is_admin": False},
-    {"code": "COMPANY004", "name": "GHI Mayın", "is_admin": False},
+
 ]
 
 USERS = [
     # Super Admin
     {"email": "admin@system.com", "password": "admin123", "company_code": "ADMIN", "role": "admin"},
+    {"email": "test@test.com", "password": "test123", "company_code": "ADMIN", "role": "admin"},]
     
-    # COMPANY001 (ABC İnşaat)
-    {"email": "user1@abc.com", "password": "password123", "company_code": "COMPANY001", "role": "user"},
-    {"email": "manager1@abc.com", "password": "password123", "company_code": "COMPANY001", "role": "admin"},
-    
-    # COMPANY002 (XYZ Fabrika)
-    {"email": "user2@xyz.com", "password": "password123", "company_code": "COMPANY002", "role": "user"},
-    {"email": "manager2@xyz.com", "password": "password123", "company_code": "COMPANY002", "role": "admin"},
-    
-    # COMPANY003 (DEF Lojistik)
-    {"email": "user3@def.com", "password": "password123", "company_code": "COMPANY003", "role": "user"},
-    {"email": "manager3@def.com", "password": "password123", "company_code": "COMPANY003", "role": "admin"},
-    
-    # COMPANY004 (GHI Mayın)
-    {"email": "user4@ghi.com", "password": "password123", "company_code": "COMPANY004", "role": "user"},
-    {"email": "manager4@ghi.com", "password": "password123", "company_code": "COMPANY004", "role": "admin"},
-]
 
 
 async def init_db():
@@ -81,18 +64,8 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
     print("✅ Tables created successfully")
     
-    # Clear existing data
-    async with AsyncSessionLocal() as session:
-        from sqlalchemy import delete
-        try:
-            print("\n🗑️  Clearing existing data...")
-            await session.execute(delete(models.User))
-            await session.execute(delete(models.Company))
-            await session.commit()
-            print("✅ Existing data cleared")
-        except Exception as e:
-            print(f"⚠️  No existing data to clear: {e}")
-            await session.rollback()
+    # Do NOT clear existing data by default
+    print("\nℹ️  Skipping data wipe (preserving existing records).")
     
     # Create companies and users
     async with AsyncSessionLocal() as session:
@@ -123,6 +96,64 @@ async def init_db():
                     )
                     session.add(user)
                     print(f"  ✅ {user_data['email']} ({user_data['role']}) -> {user_data['company_code']}")
+
+            # Seed general model (PPE Detection)
+            print("\n🤖 Creating general model (PPE Detection)...")
+            backend_dir = Path(__file__).parent
+            default_model_path = backend_dir.parent / "model" / "weights" / "best.pt"
+            general_model = models.GeneralModel(
+                name="PPE Detection",
+                description="Helmet + Vest",
+                version="v1.0",
+                path=str(default_model_path),
+                is_active=True
+            )
+            session.add(general_model)
+            await session.flush()
+
+            # Seed cameras per company (dummy data)
+            print("\n📷 Creating cameras and model-camera assignments...")
+            camera_templates = [
+                {"name": "Main Entrance", "location": "Gate A", "rtsp_url": "0", "status": "online"},
+                {"name": "Warehouse", "location": "Zone 2", "rtsp_url": "0", "status": "online"},
+                {"name": "Loading Dock", "location": "Dock 3", "rtsp_url": "0", "status": "offline"},
+            ]
+
+            for company_data in COMPANIES:
+                if company_data["code"] in ["ADMIN", "SUPERADMIN", "SYSTEM"]:
+                    continue
+                company = companies_dict.get(company_data["code"])
+                if not company:
+                    continue
+
+                # Assign model to company
+                company_model = models.CompanyGeneralModel(
+                    company_id=company.id,
+                    model_id=general_model.id,
+                    is_enabled=True
+                )
+                session.add(company_model)
+
+                for idx, cam_tpl in enumerate(camera_templates):
+                    cam = models.Camera(
+                        name=f"{cam_tpl['name']} - {company_data['code']}",
+                        location=cam_tpl["location"],
+                        rtsp_url=cam_tpl["rtsp_url"],
+                        status=cam_tpl["status"],
+                        company_id=company.id
+                    )
+                    session.add(cam)
+                    await session.flush()
+
+                    # Assign model to camera with alternating active status
+                    is_active = True if idx < 2 else False
+                    assignment = models.CompanyModelCamera(
+                        company_id=company.id,
+                        camera_id=cam.id,
+                        model_id=general_model.id,
+                        is_active=is_active
+                    )
+                    session.add(assignment)
             
             await session.commit()
             print("\n✅ All users created successfully")
@@ -145,21 +176,6 @@ async def init_db():
     print("    - Email: admin@system.com")
     print("    - Password: admin123")
     
-    print("\n🏢 COMPANY001 (ABC İnşaat):")
-    print("    - User: user1@abc.com / password123")
-    print("    - Manager: manager1@abc.com / password123")
-    
-    print("\n🏢 COMPANY002 (XYZ Fabrika):")
-    print("    - User: user2@xyz.com / password123")
-    print("    - Manager: manager2@xyz.com / password123")
-    
-    print("\n🏢 COMPANY003 (DEF Lojistik):")
-    print("    - User: user3@def.com / password123")
-    print("    - Manager: manager3@def.com / password123")
-    
-    print("\n🏢 COMPANY004 (GHI Mayın):")
-    print("    - User: user4@ghi.com / password123")
-    print("    - Manager: manager4@ghi.com / password123")
     
     print("\n⚠️  IMPORTANT: Change these default passwords in production!")
     print("=" * 60 + "\n")

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiClient } from '../utils/api';
+import { apiClient, addCompanyCodeToUrl } from '../utils/api';
 import { Camera, Activity, AlertTriangle, CheckCircle, XCircle, MoreVertical, Shirt, HardHat } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useAuth } from '../context/AuthContext';
@@ -26,10 +26,14 @@ export function Dashboard() {
     const fetchInitialData = async () => {
       try {
         setLoading(true);
+        const camerasUrl = addCompanyCodeToUrl('/api/cameras', activeCompanyCode);
+        const detectionsUrl = addCompanyCodeToUrl('/api/detections', activeCompanyCode);
+        const violationsUrl = addCompanyCodeToUrl('/api/violations', activeCompanyCode);
+
         const [camerasRes, detectionsRes, violationsRes] = await Promise.all([
-          apiClient.get('/api/cameras'),
-          apiClient.get('/api/detections'),
-          apiClient.get('/api/violations'),
+          apiClient.get(camerasUrl),
+          apiClient.get(detectionsUrl),
+          apiClient.get(violationsUrl),
         ]);
 
         // Camera listesini sadece ilk yüklemede set et - stream'leri kesmemek için
@@ -47,15 +51,18 @@ export function Dashboard() {
     };
 
     fetchInitialData();
-  }, []);
+  }, [activeCompanyCode]);
 
   // Her 10 saniyede bir sadece detections ve violations'ı güncelle (cameras'ı güncelleme!)
   useEffect(() => {
     const fetchDynamicData = async () => {
       try {
+        const detectionsUrl = addCompanyCodeToUrl('/api/detections', activeCompanyCode);
+        const violationsUrl = addCompanyCodeToUrl('/api/violations', activeCompanyCode);
+
         const [detectionsRes, violationsRes] = await Promise.all([
-          apiClient.get('/api/detections'),
-          apiClient.get('/api/violations'),
+          apiClient.get(detectionsUrl),
+          apiClient.get(violationsUrl),
         ]);
         
         setDetections(Array.isArray(detectionsRes.data) ? detectionsRes.data : []);
@@ -80,7 +87,7 @@ export function Dashboard() {
       clearTimeout(timeout);
       clearInterval(interval);
     };
-  }, []);
+  }, [activeCompanyCode]);
 
   // Grafik verilerini oluştur
   const generateChartData = (detections, violations) => {

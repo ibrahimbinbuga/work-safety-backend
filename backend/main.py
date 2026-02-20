@@ -112,9 +112,8 @@ async def verify_company_access(
     if company_code is None:
         company_code = current_user.company_code
     
-    # Check if user is admin (has admin company code)
-    if is_admin(current_user.company_code):
-        # Admins can access any company
+    # Check if user is admin (role-based)
+    if current_user.role == "admin":
         return company_code
     
     # Regular users can only access their own company
@@ -163,10 +162,13 @@ def get_active_model_path() -> str:
     """
     return ACTIVE_MODEL_PATH
 
-def start_camera_thread(camera_id: int, rtsp_url: str):
+
+
+def start_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str] = None, use_default_model: bool = True):
     """Start a blocking camera loop in a separate thread."""
     # 📌 Model yolunu al (arka planda yükleniyor olabilir)
-    model_path = get_active_model_path()
+    if model_path is None and use_default_model:
+        model_path = get_active_model_path()
     
     # Eğer model yoksa, kullanıcı bilgilendir ama kamera yine de başlat
     # (raw camera feed gösterecek, detection olmadan)
@@ -242,6 +244,16 @@ async def save_violation_async(payload: dict):
                 return
 
             # Create Detection rows for each violation type (head/vest etc.)
+            camera_id = payload.get('camera_id')
+            if camera_id is not None:
+                cam = await session.get(models.Camera, camera_id)
+                if cam is None or cam.company_id is None:
+                    print(f"[consumer] ⚠️ Camera {camera_id} has no company_id, skipping violation save")
+                    return
+                company_id = cam.company_id
+            else:
+                print(f"[consumer] ⚠️ payload has no camera_id, skipping violation save")
+                return
             for v in payload.get('violations', []):
                 # Validate violation type (eski kodun mantığına uygun)
                 if v not in ['head', 'vest']:
@@ -415,24 +427,15 @@ async def logout(current_user: TokenData = Depends(get_current_user)):
 
 @app.get("/api/companies", response_model=list[CompanyResponse])
 async def get_companies(
-    current_user: TokenData = Depends(get_current_user),
+    admin_user: TokenData = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Get all companies from database.
-    Only accessible by admin users (those with admin company codes).
+    Only accessible by admin users.
     """
-    # Check if user is admin
-    if not is_admin(current_user.company_code):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only administrators can access company list"
-        )
-    
-    # Get all companies
     result = await db.execute(select(models.Company).order_by(models.Company.name))
     companies = result.scalars().all()
-    
     return companies
 
 
@@ -588,22 +591,31 @@ async def get_cameras(
     )
     company = company_result.scalar_one_or_none()
     
-    if not company and not is_admin(verified_company_code):
+    if not company and current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Company not found"
         )
     
-    # If admin using admin code, get all cameras
-    if is_admin(verified_company_code):
+    # Admin without specific company: return all cameras
+    if current_user.role == "admin" and (company is None):
         result = await db.execute(select(models.Camera))
-    else:
-        # Regular user: get cameras for their company
-        result = await db.execute(
-            select(models.Camera).where(models.Camera.company_id == company.id)
-        )
-    
-    return result.scalars().all()
+        cameras = result.scalars().all()
+        return [camera_to_dict(cam, model_is_active=False, active_models=[]) for cam in cameras]
+
+    # Regular user or admin with specific company
+    result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company.id)
+    )
+    cameras = result.scalars().all()
+
+    # Attach active models per camera
+    response = []
+    for cam in cameras:
+        active_models = await get_camera_active_models(db, company.id, cam.id)
+        response.append(camera_to_dict(cam, active_models=active_models))
+
+    return response
 
 
 @app.get("/api/detections")
@@ -624,14 +636,14 @@ async def get_detections(
     )
     company = company_result.scalar_one_or_none()
     
-    if not company and not is_admin(verified_company_code):
+    if not company and current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Company not found"
         )
     
     # If admin using admin code, get all detections
-    if is_admin(verified_company_code):
+    if current_user.role == "admin":
         result = await db.execute(select(models.Detection))
     else:
         # Regular user: get detections for their company
@@ -660,14 +672,14 @@ async def get_violations(
     )
     company = company_result.scalar_one_or_none()
     
-    if not company and not is_admin(verified_company_code):
+    if not company and current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Company not found"
         )
     
     # If admin using admin code, get all violations
-    if is_admin(verified_company_code):
+    if current_user.role == "admin":
         result = await db.execute(
             select(models.Violations).order_by(models.Violations.tarih_saat.desc())
         )
@@ -695,7 +707,7 @@ async def api_start_local_camera(
             return {"error": "camera not found"}
         
         # Verify company access to this camera
-        if not is_admin(current_user.company_code):
+        if current_user.role != "admin":
             # Check if the camera belongs to the user's company
             company_result = await session.execute(
                 select(models.Company).where(
@@ -711,7 +723,8 @@ async def api_start_local_camera(
         
         # Use "0" for local camera
         print(f"[api_start_local_camera] Starting local camera for camera_id={camera_id}")
-        start_camera_thread(cam.id, "0")
+        model_path = await get_active_model_path_for_camera(session, cam.company_id, cam.id)
+        start_camera_thread(cam.id, "0", model_path=model_path, use_default_model=False)
     return {"status": "started with local camera", "camera_id": camera_id}
 
 
@@ -730,7 +743,7 @@ async def api_stop_camera(
             detail="Camera not found"
         )
     
-    if not is_admin(current_user.company_code):
+    if current_user.role != "admin":
         # Check if the camera belongs to the user's company
         company_result = await db.execute(
             select(models.Company).where(
@@ -838,6 +851,8 @@ def modelmeta_to_dict(model):
         "uploaded_at": model.uploaded_at.isoformat() if model.uploaded_at else "",
         "is_active": model.is_active,
     }
+
+
 
 @app.post("/api/model/upload")
 async def upload_model(
@@ -955,6 +970,243 @@ async def get_models(current_user: TokenData = Depends(get_current_user)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
 
+# ===== Company Model Management Endpoints =====
+
+@app.get("/api/company/{company_code}/models")
+async def get_company_models(
+    company_code: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Belirli bir company için atanan modelleri döndürür.
+    Admin tüm şirketlere, regular users kendi şirketlerine erişebilir.
+    """
+    # Company access kontrolü
+    await verify_company_access(current_user, company_code)
+    
+    try:
+        # Company'yi bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        # Company'nin modellerini getir
+        result = await db.execute(
+            select(models.CompanyModel)
+            .where(models.CompanyModel.company_id == company.id)
+            .join(models.ModelMeta)
+            .order_by(models.ModelMeta.version.desc())
+        )
+        company_models = result.scalars().all()
+        
+        # Response oluştur
+        response = []
+        for cm in company_models:
+            response.append({
+                "id": cm.id,
+                "model_id": cm.model_id,
+                "company_id": cm.company_id,
+                "is_active": cm.is_active,
+                "enabled_at": cm.enabled_at.isoformat() if cm.enabled_at else "",
+                "model": {
+                    "id": cm.model.id,
+                    "path": cm.model.path,
+                    "version": cm.model.version,
+                    "description": cm.model.description,
+                    "uploaded_at": cm.model.uploaded_at.isoformat() if cm.model.uploaded_at else "",
+                }
+            })
+        
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
+
+
+@app.post("/api/company/{company_code}/models/{model_id}/assign")
+async def assign_model_to_company(
+    company_code: str,
+    model_id: int,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Bir modeli bir şirkete atar. (Admin only)
+    """
+    try:
+        # Company ve Model'i bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        model_result = await db.execute(
+            select(models.ModelMeta).where(models.ModelMeta.id == model_id)
+        )
+        model = model_result.scalars().first()
+        if not model:
+            raise HTTPException(status_code=404, detail="Model bulunamadı")
+        
+        # Zaten atanmış mı kontrol et
+        existing = await db.execute(
+            select(models.CompanyModel)
+            .where(
+                (models.CompanyModel.company_id == company.id) &
+                (models.CompanyModel.model_id == model_id)
+            )
+        )
+        if existing.scalars().first():
+            raise HTTPException(status_code=409, detail="Model zaten bu şirkete atanmış")
+        
+        # Yeni atama oluştur
+        company_model = models.CompanyModel(
+            company_id=company.id,
+            model_id=model_id,
+            is_active=False
+        )
+        db.add(company_model)
+        await db.commit()
+        
+        return {
+            "status": "success",
+            "message": f"Model {model.version} şirkete {company.name} atandı"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model atama hatası: {str(e)}")
+
+
+@app.post("/api/company/{company_code}/models/{company_model_id}/activate")
+async def activate_model_for_company(
+    company_code: str,
+    company_model_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Belirli bir company için modeli aktifleştir.
+    Aynı anda sadece bir model aktif olabilir.
+    """
+    # Company access kontrolü
+    await verify_company_access(current_user, company_code)
+    
+    try:
+        # Company'yi bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        # CompanyModel'i bul (model relationship ile)
+        cm_result = await db.execute(
+            select(models.CompanyModel)
+            .where(
+                (models.CompanyModel.id == company_model_id) &
+                (models.CompanyModel.company_id == company.id)
+            )
+        )
+        company_model = cm_result.scalars().first()
+        if not company_model:
+            raise HTTPException(status_code=404, detail="Model ataması bulunamadı")
+        
+        # Aynı şirketteki diğer aktif modelleri pasif yap
+        await db.execute(
+            update(models.CompanyModel)
+            .where(
+                (models.CompanyModel.company_id == company.id) &
+                (models.CompanyModel.is_active == True)
+            )
+            .values(is_active=False)
+        )
+        
+        # Bu modeli aktif yap
+        company_model.is_active = True
+        await db.commit()
+        
+        # Model yolunu al ve aktif model path'i güncelle
+        model_path = company_model.model.path
+        set_active_model_path(model_path)
+        
+        return {
+            "status": "success",
+            "message": f"Model {company_model.model.version} şirkete {company.name} aktifleştirildi"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model aktivasyon hatası: {str(e)}")
+
+
+@app.post("/api/company/{company_code}/models/{company_model_id}/deactivate")
+async def deactivate_model_for_company(
+    company_code: str,
+    company_model_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Belirli bir company için modeli deaktifleştir.
+    """
+    # Company access kontrolü
+    await verify_company_access(current_user, company_code)
+    
+    try:
+        # Company'yi bul
+        company_result = await db.execute(
+            select(models.Company).where(models.Company.code == company_code)
+        )
+        company = company_result.scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+        
+        # CompanyModel'i bul
+        cm_result = await db.execute(
+            select(models.CompanyModel)
+            .where(
+                (models.CompanyModel.id == company_model_id) &
+                (models.CompanyModel.company_id == company.id)
+            )
+        )
+        company_model = cm_result.scalars().first()
+        if not company_model:
+            raise HTTPException(status_code=404, detail="Model ataması bulunamadı")
+        
+        # Modeli deaktif yap
+        company_model.is_active = False
+        await db.commit()
+        
+        set_active_model_path("")
+        
+        return {
+            "status": "success",
+            "message": f"Model {company_model.model.version} deaktifleştirildi"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Model deaktivasyonu hatası: {str(e)}")
+
 @app.on_event("startup")
 async def startup_event():
     global main_loop, violation_queue, consumer_task
@@ -976,6 +1228,7 @@ async def startup_event():
     # Consumer task'ı başlat
     consumer_task = asyncio.create_task(violation_consumer_task(violation_queue))
     
+
     # 📌 Model'i arka planda ön-yükle (bloke etmez)
     model_path = get_active_model_path()
     if model_path and Path(model_path).exists():
@@ -983,7 +1236,7 @@ async def startup_event():
         preload_model_async(model_path)
         print(f"[startup] ✅ Model ön-yükleme başlatıldı (kamera donmayacak)")
     
-    # 📌 Tüm kameraları otomatik başlat
+    # 📌 Tüm kameraları otomatik başlat 
     try:
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(models.Camera))

@@ -5,17 +5,19 @@ import CompanySelector from './CompanySelector';
 export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
   const { logout, user, isAdmin, activeCompanyCode } = useAuth();
 
-  const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, adminOnly: false },
-    { id: 'cameras', label: 'Cameras', icon: Camera, adminOnly: false },
-    { id: 'model', label: 'Model Management', icon: BrainCircuit, adminOnly: true },
-    { id: 'violations', label: 'Violations', icon: AlertTriangle, adminOnly: false },
-    { id: 'reporting', label: 'Reporting', icon: FileText, adminOnly: false },
-    { id: 'settings', label: 'Settings', icon: Settings, adminOnly: false },
+  const generalItems = [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'model-camera-assignment', label: 'Model Camera Assignment', icon: Circuit, companyDependent: true },
+    { id: 'cameras', label: 'Cameras', icon: Camera, companyDependent: true },
+    { id: 'violations', label: 'Violations', icon: AlertTriangle, companyDependent: true },
+    { id: 'reporting', label: 'Reporting', icon: FileText, companyDependent: true },
+    { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
-  // Filter menu items based on admin role
-  const visibleItems = menuItems.filter(item => !item.adminOnly || isAdmin);
+  const adminItems = [
+    { id: 'models', label: 'General Model Management', icon: BrainCircuit },
+    { id: 'companies', label: 'Companies', icon: FileText },
+  ];
 
   const handleLogout = () => {
     logout();
@@ -43,27 +45,58 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
         </div>
 
         <nav className="p-4 space-y-1 flex-1 overflow-y-auto">
-          {visibleItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activePage === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  setActivePage(item.id);
-                  if (window.innerWidth < 1024) setIsOpen(false);
-                }}
-                className={`flex items-center w-full gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
-                  isActive 
-                    ? 'bg-blue-50 text-blue-600' 
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                }`}
-              >
-                <Icon className="w-5 h-5" />
-                {item.label}
-              </button>
-            );
-          })}
+          {generalItems
+            .filter(item => !item.companyDependent || !isAdmin || activeCompanyCode)
+            .map((item) => {
+              const Icon = item.icon;
+              const isActive = activePage === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setActivePage(item.id);
+                    if (window.innerWidth < 1024) setIsOpen(false);
+                  }}
+                  className={`flex items-center w-full gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
+                    isActive 
+                      ? 'bg-blue-50 text-blue-600' 
+                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+                >
+                  <Icon className="w-5 h-5" />
+                  {item.label}
+                </button>
+              );
+            })}
+
+          {isAdmin && (
+            <div className="pt-4">
+              <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">Admin Management</p>
+              <div className="mt-2 space-y-1">
+                {adminItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activePage === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setActivePage(item.id);
+                        if (window.innerWidth < 1024) setIsOpen(false);
+                      }}
+                      className={`flex items-center w-full gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
+                        isActive 
+                          ? 'bg-blue-50 text-blue-600' 
+                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                      }`}
+                    >
+                      <Icon className="w-5 h-5" />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </nav>
 
         {/* User info and logout */}

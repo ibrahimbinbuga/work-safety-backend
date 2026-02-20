@@ -2,16 +2,22 @@ import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 export function ModelManagement() {
-  const { isAdmin, activeCompanyCode } = useAuth();
+  const { isAdmin, activeCompanyCode, token } = useAuth();
+
+  // Company seçimi (Admin için)
+  const [selectedCompany, setSelectedCompany] = useState(activeCompanyCode || '');
+  const [companies, setCompanies] = useState([]);
+  const [loadingCompanies, setLoadingCompanies] = useState(false);
 
   // Model yükleme ve aktif etme için state'ler
   const [modelFile, setModelFile] = useState(null);
   const [modelVersion, setModelVersion] = useState('');
   const [modelDesc, setModelDesc] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [uploadedModels, setUploadedModels] = useState([]);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [companyModels, setCompanyModels] = useState([]);
   const [activating, setActivating] = useState(false);
-  const [activeModelPath, setActiveModelPath] = useState(null);
+  const [activeModelId, setActiveModelId] = useState(null);
   const [activeModelMeta, setActiveModelMeta] = useState(null);
   const fileInputRef = useRef();
 
@@ -22,7 +28,7 @@ export function ModelManagement() {
   const [detectionResults, setDetectionResults] = useState(null);
   const [detectionError, setDetectionError] = useState(null);
   
-  // Metrikleri yönetmek için yeni state'ler
+  // Metrikleri yönetmek için state'ler
   const [metricsFile, setMetricsFile] = useState(null);
   const [accuracyStats, setAccuracyStats] = useState([
     { label: 'Overall Accuracy', value: 0, color: 'bg-blue-600' },
@@ -36,53 +42,86 @@ export function ModelManagement() {
   });
   const metricsFileInputRef = useRef();
 
-  // Aktif model bilgisini backend'den çek
+  // Admin ise şirketleri yükle
   useEffect(() => {
-    fetch('http://localhost:8000/api/model/active')
+    if (!isAdmin) return;
+    
+    setLoadingCompanies(true);
+    fetch('http://localhost:8000/api/companies', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(data => {
-        setActiveModelPath(data.active_model_path);
-      })
-      .catch(() => setActiveModelPath(null));
-  }, [uploadedModels, activating]);
-
-  // Aktif model meta bilgisini güncelle
-  useEffect(() => {
-    if (!activeModelPath) {
-      setActiveModelMeta(null);
-      return;
-    }
-    // uploadedModels içinde path eşleşen modelin meta verisini bul
-    const meta = uploadedModels.find(m => m.path === activeModelPath);
-    setActiveModelMeta(meta || null);
-  }, [activeModelPath, uploadedModels]);
-
-  // Modelleri backend'den çek
-  useEffect(() => {
-    fetch('http://localhost:8000/api/models')
-      .then(res => res.json())
-      .then(data => {
-        // Eğer veri dizi değilse (ör: hata objesi), boş diziye fallback yap
-        if (!Array.isArray(data)) {
-          setUploadedModels([]);
-          // İsterseniz burada hata mesajını gösterebilirsiniz
-          console.error('Model listesi alınamadı:', data?.detail || data);
-        } else {
-          setUploadedModels(data);
+        if (Array.isArray(data)) {
+          setCompanies(data);
+          if (!selectedCompany && data.length > 0) {
+            setSelectedCompany(data[0].code);
+          }
         }
       })
-      .catch((err) => {
-        setUploadedModels([]);
-        console.error('Model listesi alınamadı:', err);
-      });
-  }, [activating, uploading]);
+      .catch(err => {
+        console.error('Companies loading error:', err);
+        setCompanies([]);
+      })
+      .finally(() => setLoadingCompanies(false));
+  }, [isAdmin]);
 
-  // Model dosyası seçildiğinde çağrılır
+  // Seçilen şirkete atanan modelleri yükle
+  useEffect(() => {
+    if (!selectedCompany) return;
+
+    fetch(`http://localhost:8000/api/company/${selectedCompany}/models`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setCompanyModels(data);
+          const active = data.find(cm => cm.is_active);
+          if (active) {
+            setActiveModelId(active.id);
+            setActiveModelMeta(active.model);
+          } else {
+            setActiveModelId(null);
+            setActiveModelMeta(null);
+          }
+        } else {
+          setCompanyModels([]);
+          setActiveModelId(null);
+          setActiveModelMeta(null);
+        }
+      })
+      .catch(err => {
+        console.error('Company models loading error:', err);
+        setCompanyModels([]);
+      });
+  }, [selectedCompany]);
+
+  // Tüm available modelleri yükle (Admin için)
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    fetch('http://localhost:8000/api/models', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setAvailableModels(data);
+        } else {
+          setAvailableModels([]);
+        }
+      })
+      .catch(err => {
+        console.error('Models loading error:', err);
+        setAvailableModels([]);
+      });
+  }, [isAdmin, uploading]);
+
   const handleModelFileChange = (e) => {
     setModelFile(e.target.files?.[0] || null);
   };
 
-  // Model yükleme fonksiyonu
   const handleModelUpload = async () => {
     if (!modelFile || !modelVersion) return;
     setUploading(true);
@@ -94,75 +133,136 @@ export function ModelManagement() {
     try {
       const res = await fetch('http://localhost:8000/api/model/upload', {
         method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
       });
-      if (!res.ok) throw new Error('Model yükleme hatası');
+      if (!res.ok) throw new Error('Model upload error');
       const data = await res.json();
       if (data.status === 'success') {
-        setUploadedModels((prev) => [...prev, data]);
         setModelFile(null);
         setModelVersion('');
         setModelDesc('');
         if (fileInputRef.current) fileInputRef.current.value = '';
-        alert('Model başarıyla yüklendi.');
+        alert('Model successfully uploaded.');
       } else {
-        alert('Model yüklenemedi.');
+        alert('Model upload failed.');
       }
     } catch (err) {
-      alert('Model yükleme hatası.');
+      alert('Model upload error.');
+      console.error(err);
     }
     setUploading(false);
   };
 
-  // Modeli aktif etme fonksiyonu
-  const handleActivateModel = async (modelPath) => {
-    setActivating(true);
-    const formData = new FormData();
-    formData.append('path', modelPath);
+  const handleAssignModel = async (modelId) => {
+    if (!selectedCompany) {
+      alert('Please select a company');
+      return;
+    }
+
     try {
-      const res = await fetch('http://localhost:8000/api/model/activate', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) throw new Error('Aktif etme hatası');
-      const data = await res.json();
-      if (data.status === 'active') {
-        alert('Model aktif edildi!');
-      } else {
-        alert('Model aktif edilemedi.');
+      const res = await fetch(
+        `http://localhost:8000/api/company/${selectedCompany}/models/${modelId}/assign`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || 'Model assignment error');
+      }
+      alert('Model successfully assigned!');
+      const refreshRes = await fetch(
+        `http://localhost:8000/api/company/${selectedCompany}/models`,
+        {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }
+      );
+      const updatedModels = await refreshRes.json();
+      if (Array.isArray(updatedModels)) {
+        setCompanyModels(updatedModels);
       }
     } catch (err) {
-      alert('Aktif etme hatası.');
+      alert('Model assignment error: ' + err.message);
+    }
+  };
+
+  const handleActivateModel = async (companyModelId) => {
+    if (!selectedCompany) {
+      alert('Please select a company');
+      return;
+    }
+
+    setActivating(true);
+    try {
+      const res = await fetch(
+        `http://localhost:8000/api/company/${selectedCompany}/models/${companyModelId}/activate`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+        }
+      );
+      if (!res.ok) throw new Error('Activation error');
+      const data = await res.json();
+      alert(data.message || 'Model activated!');
+      const refreshRes = await fetch(
+        `http://localhost:8000/api/company/${selectedCompany}/models`,
+        {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }
+      );
+      const updatedModels = await refreshRes.json();
+      if (Array.isArray(updatedModels)) {
+        setCompanyModels(updatedModels);
+        const active = updatedModels.find(cm => cm.is_active);
+        if (active) {
+          setActiveModelId(active.id);
+          setActiveModelMeta(active.model);
+        }
+      }
+    } catch (err) {
+      alert('Activation error: ' + err.message);
     }
     setActivating(false);
   };
 
-  // Modeli deaktif etme fonksiyonu
-  const handleDeactivateModel = async () => {
+  const handleDeactivateModel = async (companyModelId) => {
+    if (!selectedCompany) {
+      alert('Please select a company');
+      return;
+    }
+
     setActivating(true);
-    // Backend'de aktif modeli "None" yapmak için özel bir endpoint veya mevcut activate endpoint'ine boş path gönderebilirsiniz.
-    // Burada örnek olarak boş path gönderiyoruz:
-    const formData = new FormData();
-    formData.append('path', '');
     try {
-      const res = await fetch('http://localhost:8000/api/model/activate', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) throw new Error('Deaktif etme hatası');
+      const res = await fetch(
+        `http://localhost:8000/api/company/${selectedCompany}/models/${companyModelId}/deactivate`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+        }
+      );
+      if (!res.ok) throw new Error('Deactivation error');
       const data = await res.json();
-      if (data.status === 'active') {
-        alert('Model deaktif edildi!');
-      } else {
-        alert('Model deaktif edilemedi.');
+      alert(data.message || 'Model deactivated!');
+      const refreshRes = await fetch(
+        `http://localhost:8000/api/company/${selectedCompany}/models`,
+        {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }
+      );
+      const updatedModels = await refreshRes.json();
+      if (Array.isArray(updatedModels)) {
+        setCompanyModels(updatedModels);
+        setActiveModelId(null);
+        setActiveModelMeta(null);
       }
     } catch (err) {
-      alert('Deaktif etme hatası.');
+      alert('Deactivation error: ' + err.message);
     }
     setActivating(false);
   };
 
-  // Test detection için resim yükleme
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -177,9 +277,8 @@ export function ModelManagement() {
     }
   };
 
-  // Test detection - send request to backend
   const handleRunDetection = async () => {
-    if (!selectedImage || !activeModelPath) {
+    if (!selectedImage || !activeModelMeta) {
       alert('Please select an image and activate a model.');
       return;
     }
@@ -189,24 +288,20 @@ export function ModelManagement() {
     setDetectionResults(null);
 
     try {
-      // Data URL'i blob'a çevir
       const response = await fetch(selectedImage);
       const blob = await response.blob();
       
       const formData = new FormData();
       formData.append('file', blob, 'image.jpg');
-      formData.append('model_path', activeModelPath);
+      formData.append('model_path', activeModelMeta.path);
 
-      console.log('Sending detection request to backend...');
-      
       const res = await fetch('http://localhost:8000/api/detect', {
         method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
       });
 
-      console.log('Response status:', res.status);
       const data = await res.json();
-      console.log('Response data:', data);
       
       if (!res.ok) {
         throw new Error(data.message || data.detail || `HTTP Error: ${res.status}`);
@@ -216,24 +311,17 @@ export function ModelManagement() {
         setDetectionResults(data);
         setShowResults(true);
       } else {
-        setDetectionError(data.message || 'Detection başarısız oldu');
+        setDetectionError(data.message || 'Detection failed');
       }
     } catch (err) {
-      const errorMsg = err.message || 'Bilinmeyen bir hata oluştu';
-      setDetectionError('Detection sırasında bir hata oluştu: ' + errorMsg);
+      const errorMsg = err.message || 'Unknown error';
+      setDetectionError('Detection error: ' + errorMsg);
       console.error('Detection error:', err);
     }
     
     setIsAnalyzing(false);
   };
 
-  // Aktif modelden isim ve versiyon çıkarımı
-  let modelName = activeModelMeta?.version || 'No active model';
-  let modelDescStr = activeModelMeta?.description || '';
-  let modelVersionStr = activeModelMeta?.version || '';
-  let modelPathStr = activeModelMeta?.path || '';
-
-  // Metrikleri JSON dosyasından yükle
   const handleMetricsFileChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -245,7 +333,7 @@ export function ModelManagement() {
           updateMetricsFromJSON(jsonData);
           alert('Metrics loaded successfully.');
         } catch (err) {
-          alert('Invalid JSON file. Please select a valid JSON file.');
+          alert('Invalid JSON file.');
           setMetricsFile(null);
         }
       };
@@ -253,19 +341,8 @@ export function ModelManagement() {
     }
   };
 
-  // JSON'dan metrikleri güncelle
   const updateMetricsFromJSON = (jsonData) => {
     try {
-      // JSON yapısı örneği:
-      // {
-      //   "overall_accuracy": 96.8,
-      //   "helmet_detection": 98.2,
-      //   "vest_detection": 95.4,
-      //   "worker_detection": 97.6,
-      //   "inference_time_ms": 23,
-      //   "total_detections": 45230
-      // }
-      
       const newStats = [
         { 
           label: 'Overall Accuracy', 
@@ -295,24 +372,19 @@ export function ModelManagement() {
         totalDetections: jsonData.total_detections || 0,
       });
     } catch (err) {
-      alert('JSON metrikleri işlenirken hata: ' + err.message);
+      alert('JSON parsing error: ' + err.message);
     }
   };
 
-  // Demo accuracy değerleri
-  // const accuracyStats = [
-  //   { label: 'Overall Accuracy', value: 96.8, color: 'bg-blue-600' },
-  //   { label: 'Helmet Detection', value: 98.2, color: 'bg-green-500' },
-  //   { label: 'Vest Detection', value: 95.4, color: 'bg-orange-500' },
-  //   { label: 'Worker Detection', value: 97.6, color: 'bg-purple-500' },
-  // ];
+  let modelName = activeModelMeta?.version || 'No active model';
+  let modelDescStr = activeModelMeta?.description || '';
+  let modelPathStr = activeModelMeta?.path || '';
 
-  // Admin control - must select a company before managing models
-  if (isAdmin && !activeCompanyCode) {
+  if (isAdmin && !selectedCompany) {
     return (
       <div className="space-y-6 p-6">
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
-          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company</p>
         </div>
       </div>
     );
@@ -320,124 +392,113 @@ export function ModelManagement() {
 
   return (
     <div className="space-y-6 p-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Model Yükleme */}
+      {/* Company Selection for Admin */}
+      {isAdmin && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Upload New Model</h3>
-          <div className="space-y-4">
-            <div
-              className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer"
-              onClick={() => fileInputRef.current && fileInputRef.current.click()}
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Company</h3>
+          <div className="flex gap-4">
+            <select
+              value={selectedCompany}
+              onChange={(e) => setSelectedCompany(e.target.value)}
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg font-medium"
             >
-              <p className="text-gray-900 mb-1 font-medium">
-                {modelFile ? modelFile.name : 'Drop YOLO model files here'}
-              </p>
-              <button
-                className="border border-gray-300 bg-white px-4 py-2 rounded-lg text-sm font-medium"
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  fileInputRef.current && fileInputRef.current.click();
-                }}
-              >
-                Select Files
-              </button>
-              <input
-                type="file"
-                accept=".pt,.weights,.onnx"
-                className="hidden"
-                ref={fileInputRef}
-                onChange={handleModelFileChange}
-              />
-            </div>
-            <div>
-              <input
-                type="text"
-                placeholder="Model Version (e.g., v3.3.0)"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                value={modelVersion}
-                onChange={e => setModelVersion(e.target.value)}
-              />
-            </div>
-            <div>
-              <textarea
-                placeholder="Description"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                rows={2}
-                value={modelDesc}
-                onChange={e => setModelDesc(e.target.value)}
-              />
-            </div>
-            {/* Metrikleri JSON dosyasından yükle */}
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center">
-              <p className="text-gray-900 mb-2 text-sm font-medium">
-                {metricsFile ? metricsFile.name : 'Drop metrics JSON here'}
-              </p>
-              <button
-                className="border border-gray-300 bg-white px-3 py-1.5 rounded text-xs font-medium"
-                type="button"
-                onClick={() => metricsFileInputRef.current && metricsFileInputRef.current.click()}
-              >
-                Upload Metrics
-              </button>
-              <input
-                type="file"
-                accept=".json"
-                className="hidden"
-                ref={metricsFileInputRef}
-                onChange={handleMetricsFileChange}
-              />
-            </div>
-            <button
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-medium"
-              type="button"
-              onClick={handleModelUpload}
-              disabled={uploading || !modelFile || !modelVersion}
-            >
-              {uploading ? 'Uploading...' : 'Upload Model'}
-            </button>
+              <option value="">-- Select Company --</option>
+              {companies.map((company) => (
+                <option key={company.id} value={company.code}>
+                  {company.name} ({company.code})
+                </option>
+              ))}
+            </select>
           </div>
-          {/* Yüklenen modelleri göster */}
-          {uploadedModels.length > 0 && (
-            <div className="mt-6">
-              <h4 className="text-sm font-semibold mb-2">Uploaded Models</h4>
-              <ul className="space-y-2">
-                {uploadedModels.map((m, i) => {
-                  const isActive = m.path === activeModelPath;
-                  return (
-                    <li key={i} className={`flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 border border-gray-200 rounded px-3 py-2`}>
-                      <div>
-                        <div className="font-bold">{m.version}</div>
-                        <div className="text-xs text-gray-500">{m.description}</div>
-                        <div className="text-xs text-gray-400 break-all">{m.path}</div>
-                      </div>
-                      <div className="flex gap-2 mt-2 sm:mt-0">
-                        {isActive ? (
-                          <button
-                            className="px-3 py-1 rounded bg-red-600 text-white text-xs font-medium"
-                            disabled={activating}
-                            onClick={handleDeactivateModel}
-                          >
-                            {activating ? 'Deactivating...' : 'Deactivate'}
-                          </button>
-                        ) : (
-                          <button
-                            className="px-3 py-1 rounded bg-green-600 text-white text-xs font-medium"
-                            disabled={activating}
-                            onClick={() => handleActivateModel(m.path)}
-                          >
-                            {activating ? 'Activating...' : 'Activate'}
-                          </button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+          {selectedCompany && (
+            <div className="mt-2 p-3 bg-blue-50 rounded-lg text-blue-900 text-sm">
+              ✅ Selected company: <strong>{companies.find(c => c.code === selectedCompany)?.name}</strong>
             </div>
           )}
         </div>
-        {/* Aktif Model Bilgisi ve Doğruluk */}
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Model Upload (Admin only) */}
+        {isAdmin && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Upload New Model</h3>
+            <div className="space-y-4">
+              <div
+                className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer"
+                onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              >
+                <p className="text-gray-900 mb-1 font-medium">
+                  {modelFile ? modelFile.name : 'Drop YOLO model files here'}
+                </p>
+                <button
+                  className="border border-gray-300 bg-white px-4 py-2 rounded-lg text-sm font-medium"
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fileInputRef.current && fileInputRef.current.click();
+                  }}
+                >
+                  Select Files
+                </button>
+                <input
+                  type="file"
+                  accept=".pt,.weights,.onnx"
+                  className="hidden"
+                  ref={fileInputRef}
+                  onChange={handleModelFileChange}
+                />
+              </div>
+              <div>
+                <input
+                  type="text"
+                  placeholder="Model Version (e.g., v3.3.0)"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  value={modelVersion}
+                  onChange={e => setModelVersion(e.target.value)}
+                />
+              </div>
+              <div>
+                <textarea
+                  placeholder="Description"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                  rows={2}
+                  value={modelDesc}
+                  onChange={e => setModelDesc(e.target.value)}
+                />
+              </div>
+              <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center">
+                <p className="text-gray-900 mb-2 text-sm font-medium">
+                  {metricsFile ? metricsFile.name : 'Drop metrics JSON here'}
+                </p>
+                <button
+                  className="border border-gray-300 bg-white px-3 py-1.5 rounded text-xs font-medium"
+                  type="button"
+                  onClick={() => metricsFileInputRef.current && metricsFileInputRef.current.click()}
+                >
+                  Upload Metrics
+                </button>
+                <input
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  ref={metricsFileInputRef}
+                  onChange={handleMetricsFileChange}
+                />
+              </div>
+              <button
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg font-medium"
+                type="button"
+                onClick={handleModelUpload}
+                disabled={uploading || !modelFile || !modelVersion}
+              >
+                {uploading ? 'Uploading...' : 'Upload Model'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Current Model Performance */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Current Model Performance</h3>
           {activeModelMeta ? (
@@ -449,10 +510,7 @@ export function ModelManagement() {
                   </div>
                   <div>
                     <p className="text-gray-900 font-bold">{modelName}</p>
-                    <p className="text-blue-600 text-sm font-medium">
-                      {modelVersionStr ? `Version ${modelVersionStr}` : 'No version info'}
-                    </p>
-                    <p className="text-gray-400 text-xs break-all">{modelPathStr}</p>
+                    <p className="text-blue-600 text-sm font-medium">Active</p>
                     <p className="text-gray-500 text-xs">{modelDescStr}</p>
                   </div>
                 </div>
@@ -476,7 +534,7 @@ export function ModelManagement() {
               <div className="grid grid-cols-2 gap-4 pt-6 border-t border-gray-100 mt-6">
                 <div>
                   <p className="text-gray-500 text-xs font-medium mb-1 uppercase tracking-wider">Inference Time</p>
-                  <p className="text-gray-900 text-xl font-bold">{modelStats.inferenceTime} <span className="text-sm font-normal text-gray-500">avg</span></p>
+                  <p className="text-gray-900 text-xl font-bold">{modelStats.inferenceTime}</p>
                 </div>
                 <div>
                   <p className="text-gray-500 text-xs font-medium mb-1 uppercase tracking-wider">Total Detections</p>
@@ -492,6 +550,95 @@ export function ModelManagement() {
           )}
         </div>
       </div>
+
+      {/* Manage Models */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">
+          {selectedCompany ? `Manage Models for ${selectedCompany}` : 'Manage Models'}
+        </h3>
+        
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Assigned Models */}
+          <div>
+            <h4 className="font-semibold text-gray-900 mb-3">Assigned Models</h4>
+            {companyModels.length > 0 ? (
+              <div className="space-y-2">
+                {companyModels.map((cm) => (
+                  <div key={cm.id} className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 border border-gray-200 rounded px-3 py-2 gap-2">
+                    <div className="flex-1">
+                      <div className="font-bold text-gray-900">{cm.model.version}</div>
+                      <div className="text-xs text-gray-500">{cm.model.description}</div>
+                      {cm.is_active && (
+                        <div className="text-xs text-green-600 font-semibold">✅ Active</div>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      {cm.is_active ? (
+                        <button
+                          className="px-3 py-1 rounded bg-red-600 text-white text-xs font-medium"
+                          disabled={activating}
+                          onClick={() => handleDeactivateModel(cm.id)}
+                        >
+                          {activating ? 'Processing...' : 'Deactivate'}
+                        </button>
+                      ) : (
+                        <button
+                          className="px-3 py-1 rounded bg-green-600 text-white text-xs font-medium"
+                          disabled={activating}
+                          onClick={() => handleActivateModel(cm.id)}
+                        >
+                          {activating ? 'Processing...' : 'Activate'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-gray-500 text-center py-6 bg-gray-50 rounded-lg">
+                <p className="text-sm">No models assigned to this company yet</p>
+              </div>
+            )}
+          </div>
+
+          {/* Available Models (Admin only) */}
+          {isAdmin && (
+            <div>
+              <h4 className="font-semibold text-gray-900 mb-3">Available Models</h4>
+              {availableModels.length > 0 ? (
+                <div className="space-y-2">
+                  {availableModels.map((model) => {
+                    const isAssigned = companyModels.some(cm => cm.model_id === model.id);
+                    return (
+                      <div key={model.id} className="flex flex-col sm:flex-row sm:items-center justify-between bg-gray-50 border border-gray-200 rounded px-3 py-2 gap-2">
+                        <div className="flex-1">
+                          <div className="font-bold text-gray-900">{model.version}</div>
+                          <div className="text-xs text-gray-500">{model.description}</div>
+                        </div>
+                        {!isAssigned ? (
+                          <button
+                            className="px-3 py-1 rounded bg-blue-600 text-white text-xs font-medium"
+                            onClick={() => handleAssignModel(model.id)}
+                          >
+                            Assign
+                          </button>
+                        ) : (
+                          <span className="text-xs text-green-600 font-semibold">✓ Assigned</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-gray-500 text-center py-6 bg-gray-50 rounded-lg">
+                  <p className="text-sm">No models uploaded</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Test Detection */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Test Detection</h3>
@@ -555,11 +702,6 @@ export function ModelManagement() {
                       {detectionResults.objects.map((obj, idx) => (
                         <div key={idx} className="text-sm bg-gray-50 p-2 rounded">
                           <p><span className="font-medium">{obj.class || 'Object'}:</span> {(obj.confidence * 100).toFixed(1)}% confidence</p>
-                          {obj.bbox && (
-                            <p className="text-xs text-gray-500">
-                              Position: ({obj.bbox[0]?.toFixed(0)}, {obj.bbox[1]?.toFixed(0)})
-                            </p>
-                          )}
                         </div>
                       ))}
                     </div>
