@@ -269,7 +269,7 @@ async def save_violation_async(payload: dict):
                 
                 violation_area = str(payload.get('camera_id')) if payload.get('camera_id') is not None else None  # ihlal_yapilan_bolge (optional, can be None)
                 
-                vio = models.Violation(
+                vio = models.Violations(
                     company_id=company_id,
                     ihlal_cesidi=v,
                     ihlal_yapilan_bolge=violation_area,
