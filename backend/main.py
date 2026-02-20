@@ -163,114 +163,6 @@ def get_active_model_path() -> str:
     return ACTIVE_MODEL_PATH
 
 
-async def get_general_model(db: AsyncSession) -> Optional[models.GeneralModel]:
-    result = await db.execute(
-        select(models.GeneralModel).order_by(models.GeneralModel.uploaded_at.desc())
-    )
-    return result.scalars().first()
-
-
-async def get_general_models(db: AsyncSession) -> list[models.GeneralModel]:
-    result = await db.execute(
-        select(models.GeneralModel).order_by(models.GeneralModel.uploaded_at.desc())
-    )
-    return result.scalars().all()
-
-
-async def get_general_model_by_id(db: AsyncSession, model_id: int) -> Optional[models.GeneralModel]:
-    return await db.get(models.GeneralModel, model_id)
-
-
-async def get_general_model_path(db: AsyncSession) -> Optional[str]:
-    general_model = await get_general_model(db)
-    if general_model and general_model.path:
-        return general_model.path
-    return MODEL_PATH
-
-
-async def get_model_path_by_id(db: AsyncSession, model_id: int) -> Optional[str]:
-    model = await get_general_model_by_id(db, model_id)
-    return model.path if model else None
-
-
-async def get_camera_model_active(db: AsyncSession, company_id: int, camera_id: int, model_id: int) -> bool:
-    result = await db.execute(
-        select(models.CompanyModelCamera)
-        .where(
-            (models.CompanyModelCamera.company_id == company_id) &
-            (models.CompanyModelCamera.camera_id == camera_id) &
-            (models.CompanyModelCamera.model_id == model_id)
-        )
-    )
-    assignment = result.scalars().first()
-    return bool(assignment.is_active) if assignment else False
-
-
-async def get_camera_active_models(db: AsyncSession, company_id: int, camera_id: int) -> list[dict]:
-    result = await db.execute(
-        select(models.CompanyModelCamera, models.GeneralModel)
-        .join(models.GeneralModel, models.GeneralModel.id == models.CompanyModelCamera.model_id)
-        .where(
-            (models.CompanyModelCamera.company_id == company_id) &
-            (models.CompanyModelCamera.camera_id == camera_id) &
-            (models.CompanyModelCamera.is_active == True)
-        )
-        .order_by(models.GeneralModel.uploaded_at.desc())
-    )
-    rows = result.all()
-    return [
-        {
-            "id": model.id,
-            "name": model.name,
-            "version": model.version,
-        }
-        for _, model in rows
-    ]
-
-
-async def get_active_model_path_for_camera(db: AsyncSession, company_id: int, camera_id: int) -> Optional[str]:
-    result = await db.execute(
-        select(models.CompanyModelCamera, models.GeneralModel)
-        .join(models.GeneralModel, models.GeneralModel.id == models.CompanyModelCamera.model_id)
-        .where(
-            (models.CompanyModelCamera.company_id == company_id) &
-            (models.CompanyModelCamera.camera_id == camera_id) &
-            (models.CompanyModelCamera.is_active == True)
-        )
-        .order_by(models.GeneralModel.uploaded_at.desc())
-    )
-    row = result.first()
-    if not row:
-        return None
-    _, model = row
-    return model.path
-
-
-async def get_company_assigned_models(db: AsyncSession, company_id: int) -> list[dict]:
-    result = await db.execute(
-        select(models.CompanyGeneralModel, models.GeneralModel)
-        .join(models.GeneralModel, models.GeneralModel.id == models.CompanyGeneralModel.model_id)
-        .where(
-            (models.CompanyGeneralModel.company_id == company_id) &
-            (models.CompanyGeneralModel.is_enabled == True)
-        )
-        .order_by(models.GeneralModel.uploaded_at.desc())
-    )
-    rows = result.all()
-    return [general_model_to_dict(model) for _, model in rows]
-
-
-def camera_to_dict(cam: models.Camera, model_is_active: bool = False, active_models: Optional[list[dict]] = None) -> dict:
-    return {
-        "id": cam.id,
-        "name": cam.name,
-        "location": cam.location,
-        "rtsp_url": cam.rtsp_url,
-        "status": cam.status,
-        "company_id": cam.company_id,
-        "model_is_active": model_is_active,
-        "active_models": active_models or [],
-    }
 
 def start_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str] = None, use_default_model: bool = True):
     """Start a blocking camera loop in a separate thread."""
@@ -340,6 +232,16 @@ async def save_violation_async(payload: dict):
     async with AsyncSessionLocal() as session:
         try:
             # Create Detection rows for each violation type (head/vest etc.)
+            camera_id = payload.get('camera_id')
+            if camera_id is not None:
+                cam = await session.get(models.Camera, camera_id)
+                if cam is None or cam.company_id is None:
+                    print(f"[consumer] ⚠️ Camera {camera_id} has no company_id, skipping violation save")
+                    return
+                company_id = cam.company_id
+            else:
+                print(f"[consumer] ⚠️ payload has no camera_id, skipping violation save")
+                return
             for v in payload.get('violations', []):
                 # Validate violation type (eski kodun mantığına uygun)
                 if v not in ['head', 'vest']:
@@ -348,8 +250,8 @@ async def save_violation_async(payload: dict):
                 
                 # Create Detection record
                 det = models.Detection(  # In models.py, we have defined the Detection class and the add method is used to add the detection to the database
-                    camera_id=payload.get('camera_id'),
-                    detection_type=v,
+                    camera_id=camera_id,
+                    company_id=company_id,                    detection_type=v,
                     confidence=None,
                     is_violation=True,
                     snapshot_path=payload.get('snapshot_path'),
@@ -366,10 +268,11 @@ async def save_violation_async(payload: dict):
                 
                 violation_area = str(payload.get('camera_id')) if payload.get('camera_id') is not None else None  # ihlal_yapilan_bolge (optional, can be None)
                 
-                vio = models.Violation(  # In models.py, we have defined the Violation class and the add method is used to add the violation to the database
-                    ihlal_cesidi=v,  # violation_type: 'head' or 'vest'
-                    ihlal_yapilan_bolge=violation_area,  # violation_area: optional area where violation occurred
-                    violation_id=int(worker_id)  # violation_id: The worker/violation ID (int, required - eski kodun mantığına uygun)
+                vio = models.Violations(  # In models.py, we have defined the Violation class and the add method is used to add the violation to the database
+                    company_id=company_id,
+                    ihlal_cesidi=v,
+                    ihlal_yapilan_bolge=violation_area,
+                    violation_id=int(worker_id),
                 )
                 session.add(vio)
 
@@ -937,433 +840,6 @@ def modelmeta_to_dict(model):
     }
 
 
-def general_model_to_dict(model: models.GeneralModel) -> dict:
-    return {
-        "id": model.id,
-        "name": model.name,
-        "description": model.description,
-        "version": model.version,
-        "path": model.path,
-        "uploaded_at": model.uploaded_at.isoformat() if model.uploaded_at else "",
-        "is_active": model.is_active,
-    }
-
-
-async def restart_camera_thread_for_model(camera_id: int, rtsp_url: str, model_path: Optional[str]):
-    info = camera_threads.get(camera_id)
-    if info:
-        info['stop_event'].set()
-        info['thread'].join(timeout=2.0)
-        del camera_threads[camera_id]
-
-    start_camera_thread(camera_id, rtsp_url, model_path=model_path, use_default_model=False)
-
-
-# ===== General Model Management Endpoints (Admin Only) =====
-
-@app.get("/api/general-model")
-async def get_general_model_info(
-    current_user: TokenData = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    general_model = await get_general_model(db)
-    if not general_model:
-        raise HTTPException(status_code=404, detail="General model not found")
-    return general_model_to_dict(general_model)
-
-
-@app.get("/api/general-models")
-async def list_general_models(
-    current_user: TokenData = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    models_list = await get_general_models(db)
-    return [general_model_to_dict(m) for m in models_list]
-
-
-@app.get("/api/company/{company_code}/general-models")
-async def get_company_general_models(
-    company_code: str,
-    current_user: TokenData = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    await verify_company_access(current_user, company_code)
-
-    company_result = await db.execute(
-        select(models.Company).where(models.Company.code == company_code)
-    )
-    company = company_result.scalars().first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
-
-    return await get_company_assigned_models(db, company.id)
-
-
-@app.put("/api/company/{company_code}/general-models")
-async def update_company_general_models(
-    company_code: str,
-    payload: dict,
-    admin_user: TokenData = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Admin-only: set models enabled for a company.
-    payload: {"model_ids": [1,2,3]}
-    """
-    company_result = await db.execute(
-        select(models.Company).where(models.Company.code == company_code)
-    )
-    company = company_result.scalars().first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
-
-    model_ids = payload.get("model_ids", [])
-    if not isinstance(model_ids, list):
-        raise HTTPException(status_code=400, detail="model_ids must be a list")
-
-    # Validate models exist
-    if model_ids:
-        model_result = await db.execute(
-            select(models.GeneralModel).where(models.GeneralModel.id.in_(model_ids))
-        )
-        existing_ids = {m.id for m in model_result.scalars().all()}
-        invalid_ids = [mid for mid in model_ids if mid not in existing_ids]
-        if invalid_ids:
-            raise HTTPException(status_code=400, detail=f"Invalid model ids: {invalid_ids}")
-
-    # Update assignments: disable all, then enable selected
-    await db.execute(
-        update(models.CompanyGeneralModel)
-        .where(models.CompanyGeneralModel.company_id == company.id)
-        .values(is_enabled=False)
-    )
-
-    # Disable camera assignments for removed models
-    if model_ids:
-        await db.execute(
-            update(models.CompanyModelCamera)
-            .where(
-                (models.CompanyModelCamera.company_id == company.id) &
-                (~models.CompanyModelCamera.model_id.in_(model_ids))
-            )
-            .values(is_active=False)
-        )
-    else:
-        await db.execute(
-            update(models.CompanyModelCamera)
-            .where(models.CompanyModelCamera.company_id == company.id)
-            .values(is_active=False)
-        )
-
-    for model_id in model_ids:
-        result = await db.execute(
-            select(models.CompanyGeneralModel).where(
-                (models.CompanyGeneralModel.company_id == company.id) &
-                (models.CompanyGeneralModel.model_id == model_id)
-            )
-        )
-        assignment = result.scalars().first()
-        if assignment:
-            assignment.is_enabled = True
-        else:
-            assignment = models.CompanyGeneralModel(
-                company_id=company.id,
-                model_id=model_id,
-                is_enabled=True
-            )
-            db.add(assignment)
-
-    await db.commit()
-    return {"status": "success", "message": "Company models updated"}
-
-
-@app.post("/api/general-model/upload")
-@app.post("/api/general-models/upload")
-async def upload_general_model(
-    file: UploadFile = File(...),
-    version: str = Form(...),
-    name: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    admin_user: TokenData = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    General model upload (Admin only).
-    Creates a new general model entry.
-    """
-    allowed_ext = ('.pt', '.weights', '.onnx')
-    if not any(file.filename.endswith(ext) for ext in allowed_ext):
-        raise HTTPException(status_code=400, detail="Desteklenmeyen dosya uzantısı.")
-
-    try:
-        models_dir = Path(__file__).parent.parent / "model" / "weights"
-        models_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{version}_{uuid.uuid4().hex}_{file.filename}"
-        file_path = models_dir / filename
-
-        MAX_SIZE = 200 * 1024 * 1024
-        content = await file.read()
-        if len(content) > MAX_SIZE:
-            raise HTTPException(status_code=413, detail="Model dosyası çok büyük (max 200MB).")
-
-        with open(file_path, "wb") as f:
-            f.write(content)
-        print(f"[general-model] Model dosyası yüklendi: {file_path}")
-
-        general_model = models.GeneralModel(
-            name=name or "PPE Detection",
-            description=description or "Helmet + Vest",
-            version=version,
-            path=str(file_path),
-            is_active=True
-        )
-        db.add(general_model)
-        await db.commit()
-        await db.refresh(general_model)
-
-        return {"status": "success", "model": general_model_to_dict(general_model)}
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Model yükleme hatası: {str(e)}")
-
-
-# ===== Company - Camera - Model Endpoints =====
-
-@app.get("/api/company/{company_code}/model-cameras")
-async def get_company_model_cameras(
-    company_code: str,
-    model_id: Optional[int] = None,
-    current_user: TokenData = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    await verify_company_access(current_user, company_code)
-
-    company_result = await db.execute(
-        select(models.Company).where(models.Company.code == company_code)
-    )
-    company = company_result.scalars().first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
-
-    camera_result = await db.execute(
-        select(models.Camera).where(models.Camera.company_id == company.id)
-    )
-    cameras = camera_result.scalars().all()
-
-    response = []
-    if model_id:
-        model = await get_general_model_by_id(db, model_id)
-        if not model:
-            raise HTTPException(status_code=404, detail="Model bulunamadı")
-
-        assigned = await db.execute(
-            select(models.CompanyGeneralModel).where(
-                (models.CompanyGeneralModel.company_id == company.id) &
-                (models.CompanyGeneralModel.model_id == model_id) &
-                (models.CompanyGeneralModel.is_enabled == True)
-            )
-        )
-        if not assigned.scalars().first():
-            raise HTTPException(status_code=403, detail="Model not assigned to company")
-        for cam in cameras:
-            is_active = await get_camera_model_active(db, company.id, cam.id, model_id)
-            response.append(camera_to_dict(cam, model_is_active=is_active))
-    else:
-        for cam in cameras:
-            active_models = await get_camera_active_models(db, company.id, cam.id)
-            response.append(camera_to_dict(cam, active_models=active_models))
-
-    return response
-
-
-@app.put("/api/company/{company_code}/model-cameras")
-async def update_company_model_cameras(
-    company_code: str,
-    payload: dict,
-    current_user: TokenData = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Set model active cameras for a company (admin or user).
-    payload: {"model_id": 1, "camera_ids": [1,2,3]}
-    """
-    await verify_company_access(current_user, company_code)
-    company_result = await db.execute(
-        select(models.Company).where(models.Company.code == company_code)
-    )
-    company = company_result.scalars().first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
-
-    model_id = payload.get("model_id")
-    if not model_id:
-        latest_model = await get_general_model(db)
-        if not latest_model:
-            raise HTTPException(status_code=404, detail="Model bulunamadı")
-        model_id = latest_model.id
-
-    model = await get_general_model_by_id(db, model_id)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model bulunamadı")
-
-    assigned = await db.execute(
-        select(models.CompanyGeneralModel).where(
-            (models.CompanyGeneralModel.company_id == company.id) &
-            (models.CompanyGeneralModel.model_id == model_id) &
-            (models.CompanyGeneralModel.is_enabled == True)
-        )
-    )
-    if not assigned.scalars().first():
-        raise HTTPException(status_code=403, detail="Model not assigned to company")
-
-    camera_ids = payload.get("camera_ids", [])
-    if not isinstance(camera_ids, list):
-        raise HTTPException(status_code=400, detail="camera_ids must be a list")
-
-    # Get all cameras for company
-    cameras_result = await db.execute(
-        select(models.Camera).where(models.Camera.company_id == company.id)
-    )
-    cameras = cameras_result.scalars().all()
-    camera_id_set = {cam.id for cam in cameras}
-
-    # Validate camera_ids belong to company
-    invalid_ids = [cid for cid in camera_ids if cid not in camera_id_set]
-    if invalid_ids:
-        raise HTTPException(status_code=400, detail=f"Invalid camera ids: {invalid_ids}")
-
-    # Upsert assignments
-    for cam in cameras:
-        is_active = cam.id in camera_ids
-
-        result = await db.execute(
-            select(models.CompanyModelCamera)
-            .where(
-                (models.CompanyModelCamera.company_id == company.id) &
-                (models.CompanyModelCamera.camera_id == cam.id) &
-                (models.CompanyModelCamera.model_id == model_id)
-            )
-        )
-        assignment = result.scalars().first()
-        if assignment:
-            assignment.is_active = is_active
-        else:
-            assignment = models.CompanyModelCamera(
-                company_id=company.id,
-                camera_id=cam.id,
-                model_id=model_id,
-                is_active=is_active
-            )
-            db.add(assignment)
-
-        # Enforce single active model per camera
-        if is_active:
-            await db.execute(
-                update(models.CompanyModelCamera)
-                .where(
-                    (models.CompanyModelCamera.company_id == company.id) &
-                    (models.CompanyModelCamera.camera_id == cam.id) &
-                    (models.CompanyModelCamera.model_id != model_id)
-                )
-                .values(is_active=False)
-            )
-
-        # Restart camera threads based on new status
-        model_path = await get_active_model_path_for_camera(db, company.id, cam.id)
-        await restart_camera_thread_for_model(cam.id, cam.rtsp_url, model_path)
-
-    await db.commit()
-    return {"status": "success", "message": "Camera assignments updated"}
-
-
-@app.patch("/api/company/{company_code}/model-cameras/{camera_id}")
-async def toggle_camera_model_status(
-    company_code: str,
-    camera_id: int,
-    payload: dict,
-    current_user: TokenData = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    User/Admin: update is_active for a single camera.
-    payload: {"model_id": 1, "is_active": true|false}
-    """
-    await verify_company_access(current_user, company_code)
-
-    company_result = await db.execute(
-        select(models.Company).where(models.Company.code == company_code)
-    )
-    company = company_result.scalars().first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
-
-    camera = await db.get(models.Camera, camera_id)
-    if not camera or camera.company_id != company.id:
-        raise HTTPException(status_code=404, detail="Camera not found")
-
-    model_id = payload.get("model_id")
-    if not model_id:
-        latest_model = await get_general_model(db)
-        if not latest_model:
-            raise HTTPException(status_code=404, detail="Model bulunamadı")
-        model_id = latest_model.id
-
-    model = await get_general_model_by_id(db, model_id)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model bulunamadı")
-
-    assigned = await db.execute(
-        select(models.CompanyGeneralModel).where(
-            (models.CompanyGeneralModel.company_id == company.id) &
-            (models.CompanyGeneralModel.model_id == model_id) &
-            (models.CompanyGeneralModel.is_enabled == True)
-        )
-    )
-    if not assigned.scalars().first():
-        raise HTTPException(status_code=403, detail="Model not assigned to company")
-
-    is_active = payload.get("is_active")
-    if not isinstance(is_active, bool):
-        raise HTTPException(status_code=400, detail="is_active must be boolean")
-
-    result = await db.execute(
-        select(models.CompanyModelCamera)
-        .where(
-            (models.CompanyModelCamera.company_id == company.id) &
-            (models.CompanyModelCamera.camera_id == camera.id) &
-            (models.CompanyModelCamera.model_id == model_id)
-        )
-    )
-    assignment = result.scalars().first()
-    if assignment:
-        assignment.is_active = is_active
-    else:
-        assignment = models.CompanyModelCamera(
-            company_id=company.id,
-            camera_id=camera.id,
-            model_id=model_id,
-            is_active=is_active
-        )
-        db.add(assignment)
-
-    if is_active:
-        await db.execute(
-            update(models.CompanyModelCamera)
-            .where(
-                (models.CompanyModelCamera.company_id == company.id) &
-                (models.CompanyModelCamera.camera_id == camera.id) &
-                (models.CompanyModelCamera.model_id != model_id)
-            )
-            .values(is_active=False)
-        )
-
-    await db.commit()
-
-    model_path = await get_active_model_path_for_camera(db, company.id, camera.id)
-    await restart_camera_thread_for_model(camera.id, camera.rtsp_url, model_path)
-
-    return {"status": "success", "camera_id": camera.id, "is_active": is_active}
 
 @app.post("/api/model/upload")
 async def upload_model(
@@ -1739,14 +1215,6 @@ async def startup_event():
     # Consumer task'ı başlat
     consumer_task = asyncio.create_task(violation_consumer_task(violation_queue))
     
-    # 📌 General model'i DB'den çek ve aktif modeli ayarla
-    try:
-        async with AsyncSessionLocal() as session:
-            general_model_path = await get_general_model_path(session)
-            if general_model_path:
-                set_active_model_path(general_model_path)
-    except Exception as e:
-        print(f"[startup] ⚠️ General model load failed: {e}")
 
     # 📌 Model'i arka planda ön-yükle (bloke etmez)
     model_path = get_active_model_path()
@@ -1755,7 +1223,7 @@ async def startup_event():
         preload_model_async(model_path)
         print(f"[startup] ✅ Model ön-yükleme başlatıldı (kamera donmayacak)")
     
-    # 📌 Tüm kameraları otomatik başlat (model aktiflik durumuna göre)
+    # 📌 Tüm kameraları otomatik başlat 
     try:
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(models.Camera))
@@ -1763,10 +1231,9 @@ async def startup_event():
             if cameras:
                 print(f"[startup] 📹 {len(cameras)} kamera bulundu, başlatılıyor...")
                 for cam in cameras:
-                    model_path = await get_active_model_path_for_camera(session, cam.company_id, cam.id)
                     print(f"[startup] Starting camera: {cam.id} (name: {cam.name}, rtsp: {cam.rtsp_url})")
                     # Non-blocking kamera başlatma (thread'de çalışacak)
-                    start_camera_thread(cam.id, cam.rtsp_url, model_path=model_path, use_default_model=False)
+                    start_camera_thread(cam.id, cam.rtsp_url)
             else:
                 print(f"[startup] ⚠️ Hiç kamera bulunamadı")
     except Exception as e:
