@@ -7,7 +7,7 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
 
   const generalItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'model-camera-assignment', label: 'Model Camera Assignment', icon: Circuit, companyDependent: true },
+    { id: 'model-camera-assignment', label: 'Model Camera Assignment', icon: BrainCircuit, companyDependent: true },
     { id: 'cameras', label: 'Cameras', icon: Camera, companyDependent: true },
     { id: 'violations', label: 'Violations', icon: AlertTriangle, companyDependent: true },
     { id: 'reporting', label: 'Reporting', icon: FileText, companyDependent: true },
