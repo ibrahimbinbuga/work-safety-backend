@@ -46,7 +46,8 @@ class Camera(Base):
     status = Column(String)          # online, offline
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Kamera hangi şirkete ait
     last_active = Column(DateTime(timezone=True), onupdate=func.now())
-    
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)  # Şirket (company) ilişkisi
+
     # İlişki: Bir kameranın birden çok tespiti olabilir
     detections = relationship("Detection", back_populates="camera")
     company = relationship("Company")
@@ -61,7 +62,7 @@ class Detection(Base):
     detection_type = Column(String)  # no_helmet, no_vest
     confidence = Column(Float)       # 0.95
     is_violation = Column(Boolean)   # True
-    
+
     snapshot_path = Column(String)   # Resim yolu
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -83,6 +84,7 @@ class SystemLog(Base):
 class Violations(Base):
     __tablename__ = "violations"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Kameradan alınır
     tarih_saat = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # Otomatik kayıt zamanı - CURRENT_TIMESTAMP gibi çalışır
     ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
     ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
