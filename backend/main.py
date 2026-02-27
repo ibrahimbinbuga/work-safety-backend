@@ -164,7 +164,13 @@ def get_active_model_path() -> str:
 
 
 
-def start_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str] = None, use_default_model: bool = True):
+def start_camera_thread(
+    camera_id: int,
+    rtsp_url: str,
+    model_path: Optional[str] = None,
+    model_task: Optional[str] = None,
+    use_default_model: bool = True,
+):
     """Start a blocking camera loop in a separate thread."""
     # 📌 Model yolunu al (arka planda yükleniyor olabilir)
     if model_path is None and use_default_model:
@@ -192,11 +198,11 @@ def start_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str]
         print(f"[start_camera_thread] ERROR: violation_queue is None, cannot start camera {camera_id}")
         return
     
-    print(f"[start_camera_thread] Creating thread for camera {camera_id} with rtsp_url='{rtsp_url}' and model_path='{model_path}'")
+    print(f"[start_camera_thread] Creating thread for camera {camera_id} with rtsp_url='{rtsp_url}' and model_path='{model_path}' task='{model_task}'")
     stop_event = threading.Event()
     thread = threading.Thread(
         target=run_camera_thread,
-        args=(camera_id, rtsp_url, model_path, main_loop, violation_queue, stop_event),
+        args=(camera_id, rtsp_url, model_path, model_task, main_loop, violation_queue, stop_event),
         daemon=True
     )
     camera_threads[camera_id] = {'thread': thread, 'stop_event': stop_event}
@@ -573,6 +579,39 @@ async def delete_user(
 
 # ===== Protected Camera Endpoints =====
 
+@app.get("/api/company/{company_code}/model-cameras")
+async def get_company_model_cameras(
+    company_code: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin için: belirli bir şirketin kameralarını ve aktif modellerini döndürür.
+    Cameras.jsx bu endpoint'i kullanır.
+    """
+    # Şirket erişim kontrolü
+    await verify_company_access(current_user, company_code)
+
+    company_result = await db.execute(
+        select(models.Company).where(models.Company.code == company_code)
+    )
+    company = company_result.scalars().first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company.id)
+    )
+    cameras = result.scalars().all()
+
+    response = []
+    for cam in cameras:
+        active_models = await get_camera_active_models(db, company.id, cam.id)
+        response.append(camera_to_dict(cam, active_models=active_models))
+
+    return response
+
+
 @app.get("/api/cameras")
 async def get_cameras(
     current_user: TokenData = Depends(get_current_user),
@@ -723,8 +762,17 @@ async def api_start_local_camera(
         
         # Use "0" for local camera
         print(f"[api_start_local_camera] Starting local camera for camera_id={camera_id}")
-        model_path = await get_active_model_path_for_camera(session, cam.company_id, cam.id)
-        start_camera_thread(cam.id, "0", model_path=model_path, use_default_model=False)
+        model_meta = await get_active_model_for_camera(session, cam.company_id, cam.id)
+        if model_meta:
+            start_camera_thread(
+                cam.id,
+                "0",
+                model_path=model_meta.path,
+                model_task=(getattr(model_meta, "task_type", "ppe") or "ppe"),
+                use_default_model=False,
+            )
+        else:
+            start_camera_thread(cam.id, "0")
     return {"status": "started with local camera", "camera_id": camera_id}
 
 
@@ -808,9 +856,10 @@ async def debug_camera_status(admin_user: TokenData = Depends(get_admin_user)):
     return status
 
 @app.get("/api/camera/{camera_id}/stream")
-async def stream_camera(camera_id: int, current_user: TokenData = Depends(get_current_user)):
+async def stream_camera(camera_id: int):
     """
     MJPEG stream endpoint for live camera feed with detections.
+    NOTE: This endpoint is intentionally left unauthenticated so it can be used as a raw <img> src.
     """
     # Create a placeholder black frame
     placeholder_frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -850,6 +899,7 @@ def modelmeta_to_dict(model):
         "description": model.description,
         "uploaded_at": model.uploaded_at.isoformat() if model.uploaded_at else "",
         "is_active": model.is_active,
+        "task_type": getattr(model, "task_type", "ppe") or "ppe",
     }
 
 
@@ -859,6 +909,7 @@ async def upload_model(
     file: UploadFile = File(...),
     version: str = Form(...),
     description: Optional[str] = Form(None),
+    task_type: str = Form("ppe"),
     admin_user: TokenData = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -891,11 +942,17 @@ async def upload_model(
             existing = await session.execute(select(models.ModelMeta).where(models.ModelMeta.path == str(file_path)))
             if existing.scalars().first():
                 raise HTTPException(status_code=409, detail="Bu path ile model zaten var.")
+            # task_type: ppe, fall vb. - sadece temel doğrulama
+            normalized_task = (task_type or "ppe").lower()
+            if normalized_task not in ["ppe", "fall"]:
+                normalized_task = "ppe"
+
             model_meta = models.ModelMeta(
                 path=str(file_path),
                 version=version,
                 description=description,
-                is_active=False
+                is_active=False,
+                task_type=normalized_task,
             )
             session.add(model_meta)
             await session.commit()
@@ -1138,10 +1195,6 @@ async def activate_model_for_company(
         company_model.is_active = True
         await db.commit()
         
-        # Model yolunu al ve aktif model path'i güncelle
-        model_path = company_model.model.path
-        set_active_model_path(model_path)
-        
         return {
             "status": "success",
             "message": f"Model {company_model.model.version} şirkete {company.name} aktifleştirildi"
@@ -1207,6 +1260,142 @@ async def deactivate_model_for_company(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Model deaktivasyonu hatası: {str(e)}")
 
+
+# ===== Camera-Model Management Endpoints (per camera model assignment) =====
+
+@app.get("/api/camera/{camera_id}/models")
+async def get_camera_models(
+    camera_id: int,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Belirli bir kamera için atanmış modelleri döndürür. (Admin only)
+    """
+    from sqlalchemy import and_
+
+    # Kamera var mı kontrol et
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    result = await db.execute(
+        select(models.CameraModel)
+        .join(models.ModelMeta)
+        .where(models.CameraModel.camera_id == camera_id)
+    )
+    camera_models = result.scalars().all()
+
+    response = []
+    for cm in camera_models:
+        m = cm.model
+        response.append(
+            {
+                "id": cm.id,
+                "camera_id": cm.camera_id,
+                "model_id": cm.model_id,
+                "is_active": cm.is_active,
+                "enabled_at": cm.enabled_at.isoformat() if cm.enabled_at else "",
+                "model": modelmeta_to_dict(m),
+            }
+        )
+
+    return response
+
+
+@app.post("/api/camera/{camera_id}/models/{model_id}/assign")
+async def assign_model_to_camera(
+    camera_id: int,
+    model_id: int,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Bir modeli belirli bir kameraya atar. (Admin only)
+    """
+    # Kamera ve model var mı kontrol et
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    model = await db.get(models.ModelMeta, model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    # Zaten atanmış mı kontrol et
+    existing = await db.execute(
+        select(models.CameraModel).where(
+            (models.CameraModel.camera_id == camera_id)
+            & (models.CameraModel.model_id == model_id)
+        )
+    )
+    if existing.scalars().first():
+        raise HTTPException(status_code=409, detail="Model already assigned to this camera")
+
+    camera_model = models.CameraModel(
+        camera_id=camera_id,
+        model_id=model_id,
+        is_active=False,
+    )
+    db.add(camera_model)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Model {model.version} kameraya {cam.name} atandı",
+    }
+
+
+@app.post("/api/camera/{camera_id}/models/{camera_model_id}/activate")
+async def activate_model_for_camera(
+    camera_id: int,
+    camera_model_id: int,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Bir kameradaki modellerden birini aktif yapar. (Admin only)
+    Aynı kamerada aynı anda sadece bir model aktif olabilir.
+    """
+    from sqlalchemy import and_
+
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    result = await db.execute(
+        select(models.CameraModel).where(
+            and_(
+                models.CameraModel.id == camera_model_id,
+                models.CameraModel.camera_id == camera_id,
+            )
+        )
+    )
+    camera_model = result.scalars().first()
+    if not camera_model:
+        raise HTTPException(status_code=404, detail="Camera model assignment not found")
+
+    # Diğer aktif modelleri pasif yap
+    await db.execute(
+        update(models.CameraModel)
+        .where(
+            and_(
+                models.CameraModel.camera_id == camera_id,
+                models.CameraModel.is_active == True,  # noqa: E712
+            )
+        )
+        .values(is_active=False)
+    )
+
+    # Bu modeli aktif yap
+    camera_model.is_active = True
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Model {camera_model.model.version} kamera {cam.name} için aktifleştirildi",
+    }
+
 @app.on_event("startup")
 async def startup_event():
     global main_loop, violation_queue, consumer_task
@@ -1245,8 +1434,19 @@ async def startup_event():
                 print(f"[startup] 📹 {len(cameras)} kamera bulundu, başlatılıyor...")
                 for cam in cameras:
                     print(f"[startup] Starting camera: {cam.id} (name: {cam.name}, rtsp: {cam.rtsp_url})")
-                    # Non-blocking kamera başlatma (thread'de çalışacak)
-                    start_camera_thread(cam.id, cam.rtsp_url)
+                    # Kamera için aktif model (varsa) ile başlat
+                    model_meta = await get_active_model_for_camera(session, cam.company_id, cam.id)
+                    if model_meta:
+                        start_camera_thread(
+                            cam.id,
+                            cam.rtsp_url,
+                            model_path=model_meta.path,
+                            model_task=(getattr(model_meta, "task_type", "ppe") or "ppe"),
+                            use_default_model=False,
+                        )
+                    else:
+                        # Varsayılan global model ile başlat
+                        start_camera_thread(cam.id, cam.rtsp_url)
             else:
                 print(f"[startup] ⚠️ Hiç kamera bulunamadı")
     except Exception as e:
@@ -1326,4 +1526,137 @@ async def detect(
             "status": "error",
             "message": f"Detection hatası: {str(e)}"
         }
+
+
+def camera_to_dict(cam: models.Camera, active_models=None, model_is_active: bool | None = None):
+    """
+    Kamera nesnesini frontend için serileştirir.
+    active_models: bu kamera için aktif modellerin listesi (dict listesi beklenir).
+    """
+    return {
+        "id": cam.id,
+        "name": cam.name,
+        "location": cam.location,
+        "rtsp_url": cam.rtsp_url,
+        "status": cam.status or "offline",
+        "company_id": cam.company_id,
+        "last_active": cam.last_active.isoformat() if cam.last_active else None,
+        "active_models": active_models or [],
+    }
+
+
+async def get_camera_active_models(db: AsyncSession, company_id: int, camera_id: int):
+    """
+    Belirli bir kamera için aktif modelleri döndürür.
+    Önce camera_models tablosunu, sonra fallback olarak company_models tablosunu kontrol eder.
+    """
+    from sqlalchemy import and_
+
+    # Kamera için aktif atanmış modeller
+    result = await db.execute(
+        select(models.CameraModel)
+        .join(models.ModelMeta)
+        .where(
+            and_(
+                models.CameraModel.camera_id == camera_id,
+                models.CameraModel.is_active == True,  # noqa: E712
+            )
+        )
+    )
+    camera_models = result.scalars().all()
+
+    active_models = []
+    for cm in camera_models:
+        m = cm.model
+        task_type = getattr(m, "task_type", "ppe") or "ppe"
+        active_models.append(
+            {
+                "id": cm.id,
+                "model_id": cm.model_id,
+                "version": m.version,
+                "path": m.path,
+                "task_type": task_type,
+                "name": task_type.upper(),
+            }
+        )
+
+    if active_models:
+        return active_models
+
+    # Fallback: şirket için aktif model(ler)
+    result = await db.execute(
+        select(models.CompanyModel)
+        .join(models.ModelMeta)
+        .where(
+            and_(
+                models.CompanyModel.company_id == company_id,
+                models.CompanyModel.is_active == True,  # noqa: E712
+            )
+        )
+    )
+    company_models = result.scalars().all()
+
+    for cm in company_models:
+        m = cm.model
+        task_type = getattr(m, "task_type", "ppe") or "ppe"
+        active_models.append(
+            {
+                "id": cm.id,
+                "model_id": cm.model_id,
+                "version": m.version,
+                "path": m.path,
+                "task_type": task_type,
+                "name": task_type.upper(),
+            }
+        )
+
+    return active_models
+
+
+async def get_active_model_for_camera(session: AsyncSession, company_id: int, camera_id: int) -> Optional[models.ModelMeta]:
+    """
+    Belirli bir kamera için aktif modeli döndürür.
+    Önce camera_models, sonra company_models tablosunu kontrol eder.
+    """
+    from sqlalchemy import and_
+
+    # Kamera için aktif atanmış model
+    result = await session.execute(
+        select(models.CameraModel)
+        .join(models.ModelMeta)
+        .where(
+            and_(
+                models.CameraModel.camera_id == camera_id,
+                models.CameraModel.is_active == True,  # noqa: E712
+            )
+        )
+    )
+    camera_model = result.scalars().first()
+    if camera_model:
+        return camera_model.model
+
+    # Fallback: şirket için aktif model
+    result = await session.execute(
+        select(models.CompanyModel)
+        .join(models.ModelMeta)
+        .where(
+            and_(
+                models.CompanyModel.company_id == company_id,
+                models.CompanyModel.is_active == True,  # noqa: E712
+            )
+        )
+    )
+    company_model = result.scalars().first()
+    if company_model:
+        return company_model.model
+
+    return None
+
+
+async def get_active_model_path_for_camera(session: AsyncSession, company_id: int, camera_id: int) -> Optional[str]:
+    """
+    Eski kullanım için path döndüren yardımcı fonksiyon (compat).
+    """
+    model = await get_active_model_for_camera(session, company_id, camera_id)
+    return model.path if model else None
 

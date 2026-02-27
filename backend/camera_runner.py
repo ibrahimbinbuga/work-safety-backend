@@ -3,6 +3,7 @@ import threading
 import time
 import os
 import cv2
+from datetime import datetime
 from typing import Optional
 from ultralytics import YOLO
 from state_control import StateController
@@ -71,7 +72,16 @@ def preload_model_async(model_path: str):
     print(f"[preload_model_async] Background model loading started for: {model_path}")
     return False
 
-def run_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str], loop, violation_queue, stop_event: threading.Event, debug: bool = False):
+def run_camera_thread(
+    camera_id: int,
+    rtsp_url: str,
+    model_path: Optional[str],
+    model_task: Optional[str],
+    loop,
+    violation_queue,
+    stop_event: threading.Event,
+    debug: bool = False,
+):
     """
     Blocking function intended to run in a separate thread.
     - loop: asyncio loop from the main app
@@ -79,6 +89,7 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str], 
     - stop_event: threading.Event used to stop the thread gracefully
     """
     state_controller = StateController(min_log_interval=1.0)
+    task_type = (model_task or "ppe").lower()
 
     # use rtsp_url or integer camera index
     source = rtsp_url
@@ -316,14 +327,28 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str], 
                     head_count = len([d for d in detections if d.get('class_id') == 2])
                     print(f"[CameraRunner][Camera {camera_id}] Frame {frame_count} - Persons: {person_count}, Helmets: {helmet_count}, Vests: {vest_count}, Heads: {head_count}, Total: {len(detections)}")
 
-                # Process detections through state controller - only check violations every 4 seconds
+                # Process detections through state controller or fall logic - only check violations every 4 seconds
                 current_time = time.time()
                 if current_time - last_violation_check_time >= VIOLATION_CHECK_INTERVAL:
                     last_violation_check_time = current_time
-                    logs = state_controller.process_detections(detections)
+
+                    if task_type == "fall":
+                        # Simple fall detection: treat any detection as a fall event
+                        logs = []
+                        for det in detections:
+                            worker_id = det.get('track_id') or 0
+                            logs.append({
+                                'timestamp': datetime.now().isoformat(),
+                                'worker_id': worker_id,
+                                'changes': ["Fall detected"],
+                                'status': {},
+                                'violations': ['fall'],
+                            })
+                    else:
+                        logs = state_controller.process_detections(detections)
+
                     if logs:
                         for log_entry in logs:
-                            # If violations list is not empty, send to async queue for DB write
                             violations = log_entry.get('violations', [])
                             if violations:
                                 print(f"[CameraRunner][Camera {camera_id}] ⚠️ VIOLATION DETECTED! Worker {log_entry.get('worker_id')}: {violations}")
@@ -337,7 +362,6 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str], 
                                     'changes': log_entry.get('changes'),
                                     'snapshot_path': None
                                 }
-                                # Put into asyncio queue in a thread-safe way
                                 try:
                                     loop.call_soon_threadsafe(violation_queue.put_nowait, payload)
                                     print(f"[CameraRunner][Camera {camera_id}] ✅ Violation sent to queue")

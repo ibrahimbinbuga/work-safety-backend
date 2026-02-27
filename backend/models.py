@@ -31,11 +31,10 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
     role = Column(Enum(RoleEnum), default=RoleEnum.user, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)  # Şirket (company) ilişkisi
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Şirket (company) ilişkisi
     # İlişki: Kullanıcı bir şirkete aittir
     company = relationship("Company", back_populates="users")
 
@@ -47,9 +46,8 @@ class Camera(Base):
     location = Column(String)        # Örn: "Bölge 1"
     rtsp_url = Column(String)        # Kamera IP Adresi
     status = Column(String)          # online, offline
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Kamera hangi şirkete ait
     last_active = Column(DateTime(timezone=True), onupdate=func.now())
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)  # Şirket (company) ilişkisi
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)  # Şirket (company) ilişkisi
 
     # İlişki: Bir kameranın birden çok tespiti olabilir
     detections = relationship("Detection", back_populates="camera")
@@ -105,6 +103,8 @@ class ModelMeta(Base):
     description = Column(String)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, default=False)
+    # Model'in iş tipi: "ppe", "fall" vb. (varsayılan: ppe)
+    task_type = Column(String, nullable=False, server_default="ppe")
     
     # İlişki: Bir modelin birden çok şirkete ataması olabilir
     company_assignments = relationship("CompanyModel", back_populates="model")
@@ -122,3 +122,16 @@ class CompanyModel(Base):
     # İlişkiler
     company = relationship("Company", back_populates="models")
     model = relationship("ModelMeta", back_populates="company_assignments")
+
+
+# 7. Kamera-Model İlişki Tablosu (Belirli kameraya özel model ataması)
+class CameraModel(Base):
+    __tablename__ = "camera_models"
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False)
+    model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
+    is_active = Column(Boolean, default=False)  # Bu kamera için model aktif mi?
+    enabled_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    camera = relationship("Camera")
+    model = relationship("ModelMeta")
