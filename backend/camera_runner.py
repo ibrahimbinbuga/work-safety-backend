@@ -5,72 +5,12 @@ import os
 import cv2
 from datetime import datetime
 from typing import Optional
-from ultralytics import YOLO
+
 from state_control import StateController
+from model_loader import get_model
 
-# Model cache (yüklemeyi tekrar etmemek için global)
-_MODEL_CACHE = {}
-_MODEL_LOCK = threading.Lock()
-
-# Global frame storage for streaming (camera_id -> encoded_frame_bytes)
 _frame_storage = {}
 _frame_storage_lock = threading.Lock()
-
-def get_model(model_path: str):
-    # Thread-safe model loading and caching (non-blocking after first load)
-    global _MODEL_CACHE
-    with _MODEL_LOCK:
-        if model_path not in _MODEL_CACHE:
-            try:
-                print(f"[get_model] Loading model from {model_path}")
-                model = YOLO(model_path)
-                # Try to disable fuse to avoid 'bn' attribute error with older models
-                try:
-                    # Check if model has fuse method and try to work around it
-                    if hasattr(model.model, 'fuse'):
-                        print(f"[get_model] Model fuse method found, but will skip auto-fuse in predict")
-                except:
-                    pass
-                _MODEL_CACHE[model_path] = model
-                print(f"[get_model] ✅ Model loaded successfully: {model_path}")
-            except Exception as e:
-                print(f"[get_model] Error loading model from {model_path}: {e}")
-                import traceback
-                traceback.print_exc()
-                print(f"[get_model] Trying fallback model: yolo11n.pt")
-
-                
-                try:  # It is used to load the yolo11n.pt model if the model is not found in the workspace
-                    _MODEL_CACHE[model_path] = YOLO("yolo11n.pt")
-                    print(f"[get_model] ✅ Fallback model loaded successfully")
-                except Exception as e2:
-                    print(f"[get_model] Fallback model also failed: {e2}")
-                    raise
-        return _MODEL_CACHE[model_path]
-
-def preload_model_async(model_path: str):
-    """
-    Non-blocking model preload in background.
-    Returns True if model is already cached, False if loading started.
-    """
-    global _MODEL_CACHE
-    
-    # Quick check without lock
-    if model_path in _MODEL_CACHE:
-        print(f"[preload_model_async] Model already cached: {model_path}")
-        return True
-    
-    # Start loading in background thread
-    def load_in_background():
-        try:
-            get_model(model_path)
-        except Exception as e:
-            print(f"[preload_model_async] Background loading failed: {e}")
-    
-    bg_thread = threading.Thread(target=load_in_background, daemon=True)
-    bg_thread.start()
-    print(f"[preload_model_async] Background model loading started for: {model_path}")
-    return False
 
 def run_camera_thread(
     camera_id: int,

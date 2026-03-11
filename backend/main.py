@@ -13,9 +13,10 @@ from fastapi.security import HTTPBearer
 from fastapi.security.http import HTTPAuthorizationCredentials
 
 from sqlalchemy import select, update, func
+from sqlalchemy.orm import joinedload
 from database import engine, Base, AsyncSessionLocal, get_db
 import models
-from camera_runner import run_camera_thread, get_latest_frame, preload_model_async
+from camera_runner import run_camera_thread, get_latest_frame
 from sqlalchemy.ext.asyncio import AsyncSession
 import time
 from dotenv import load_dotenv
@@ -125,13 +126,13 @@ async def verify_company_access(
     
     return company_code
 
-# Model path - cross-platform compatible
-# First try from environment variable, then use relative path
+from model_loader import preload_model_async, get_model, get_models_base_dir
+
+# Model path - cross-platform compatible, pointing into backend/models
 MODEL_PATH = os.getenv("MODEL_PATH")
 if not MODEL_PATH:
-    # Get the backend directory and construct path relative to it
     backend_dir = Path(__file__).parent
-    MODEL_PATH = str(backend_dir.parent / "model" / "weights" / "best.pt")
+    MODEL_PATH = str(backend_dir / "models" / "best.pt")
 
 # Aktif model yolunu yönetmek için global değişken
 ACTIVE_MODEL_PATH = MODEL_PATH
@@ -923,16 +924,22 @@ async def upload_model(
 ):
     """
     Yeni bir model dosyasını yükler ve kaydeder. (Admin only)
+
+    Not: DB'de tam dosya yolu yerine backend dizinine göre göreli bir yol
+    (örn. "models/filename.pt") tutulur. Böylece proje başka bir makineye
+    taşındığında path'ler geçerli kalır.
     """
     allowed_ext = ('.pt', '.weights', '.onnx')
     if not any(file.filename.endswith(ext) for ext in allowed_ext):
         raise HTTPException(status_code=400, detail="Desteklenmeyen dosya uzantısı.")
 
     try:
-        models_dir = Path(__file__).parent.parent / "model" / "weights"
-        models_dir.mkdir(parents=True, exist_ok=True)
+        backend_dir = Path(__file__).parent
+        models_dir = get_models_base_dir()
         filename = f"{version}_{uuid.uuid4().hex}_{file.filename}"
         file_path = models_dir / filename
+        # DB'de saklanacak göreli path (örn. "models/xxx.pt")
+        relative_path = file_path.relative_to(backend_dir)
 
         # Dosya boyutu kontrolü (örnek: 200MB sınır)
         MAX_SIZE = 200 * 1024 * 1024
@@ -946,8 +953,10 @@ async def upload_model(
 
         # DB'ye model meta verisini kaydet
         async with AsyncSessionLocal() as session:
-            # Aynı path varsa ekleme!
-            existing = await session.execute(select(models.ModelMeta).where(models.ModelMeta.path == str(file_path)))
+            # Aynı göreli path varsa ekleme!
+            existing = await session.execute(
+                select(models.ModelMeta).where(models.ModelMeta.path == str(relative_path))
+            )
             if existing.scalars().first():
                 raise HTTPException(status_code=409, detail="Bu path ile model zaten var.")
             # task_type: ppe, fall vb. - sadece temel doğrulama
@@ -956,7 +965,7 @@ async def upload_model(
                 normalized_task = "ppe"
 
             model_meta = models.ModelMeta(
-                path=str(file_path),
+                path=str(relative_path),
                 version=version,
                 description=description,
                 is_active=False,
@@ -964,7 +973,12 @@ async def upload_model(
             )
             session.add(model_meta)
             await session.commit()
-        return {"status": "success", "path": str(file_path), "version": version, "description": description}
+        return {
+            "status": "success",
+            "path": str(relative_path),
+            "version": version,
+            "description": description,
+        }
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1059,14 +1073,14 @@ async def get_company_models(
         if not company:
             raise HTTPException(status_code=404, detail="Şirket bulunamadı")
         
-        # Company'nin modellerini getir
+        # Company'nin modellerini getir (ModelMeta ilişkisinin eager-load edilmesi önemli)
         result = await db.execute(
             select(models.CompanyModel)
+            .options(joinedload(models.CompanyModel.model))
             .where(models.CompanyModel.company_id == company.id)
-            .join(models.ModelMeta)
-            .order_by(models.ModelMeta.version.desc())
+            .order_by(models.CompanyModel.id.desc())
         )
-        company_models = result.scalars().all()
+        company_models = result.scalars().unique().all()
         
         # Response oluştur
         response = []
@@ -1287,12 +1301,13 @@ async def get_camera_models(
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
 
+    # CameraModel ilişkisi için ModelMeta'yı eager-load et (async lazy load hatasını önlemek için)
     result = await db.execute(
         select(models.CameraModel)
-        .join(models.ModelMeta)
+        .options(joinedload(models.CameraModel.model))
         .where(models.CameraModel.camera_id == camera_id)
     )
-    camera_models = result.scalars().all()
+    camera_models = result.scalars().unique().all()
 
     response = []
     for cm in camera_models:
@@ -1315,11 +1330,12 @@ async def get_camera_models(
 async def assign_model_to_camera(
     camera_id: int,
     model_id: int,
-    admin_user: TokenData = Depends(get_admin_user),
+    current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Bir modeli belirli bir kameraya atar. (Admin only)
+    Bir modeli belirli bir kameraya atar.
+    Admin ve ilgili şirketin kullanıcıları kullanabilir.
     """
     # Kamera ve model var mı kontrol et
     cam = await db.get(models.Camera, camera_id)
@@ -1329,6 +1345,20 @@ async def assign_model_to_camera(
     model = await db.get(models.ModelMeta, model_id)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
+
+    # Yetki kontrolü: admin her kamerayı yönetebilir, kullanıcı sadece kendi şirketindeki kameraları
+    if current_user.role != "admin":
+        company_result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == func.upper(current_user.company_code)
+            )
+        )
+        company = company_result.scalar_one_or_none()
+        if not company or cam.company_id != company.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera",
+            )
 
     # Zaten atanmış mı kontrol et
     existing = await db.execute(
@@ -1358,11 +1388,12 @@ async def assign_model_to_camera(
 async def activate_model_for_camera(
     camera_id: int,
     camera_model_id: int,
-    admin_user: TokenData = Depends(get_admin_user),
+    current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Bir kameradaki modellerden birini aktif yapar. (Admin only)
+    Bir kameradaki modellerden birini aktif yapar.
+    Admin ve ilgili şirketin kullanıcıları kullanabilir.
     Aynı kamerada aynı anda sadece bir model aktif olabilir.
     """
     from sqlalchemy import and_
@@ -1370,6 +1401,20 @@ async def activate_model_for_camera(
     cam = await db.get(models.Camera, camera_id)
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
+
+    # Yetki kontrolü: admin her kamerayı yönetebilir, kullanıcı sadece kendi şirketindeki kameraları
+    if current_user.role != "admin":
+        company_result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == func.upper(current_user.company_code)
+            )
+        )
+        company = company_result.scalar_one_or_none()
+        if not company or cam.company_id != company.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera",
+            )
 
     result = await db.execute(
         select(models.CameraModel).where(
@@ -1398,6 +1443,38 @@ async def activate_model_for_camera(
     # Bu modeli aktif yap
     camera_model.is_active = True
     await db.commit()
+
+    # === Dinamik model değiştirme: mevcut kamera thread'ini durdur ve yeni model ile başlat ===
+    # Çalışan kamera thread'i varsa durdur
+    info = camera_threads.get(camera_id)
+    if info:
+        print(f"[activate_model_for_camera] Stopping running camera thread for camera {camera_id}")
+        info["stop_event"].set()
+        info["thread"].join(timeout=2.0)
+        del camera_threads[camera_id]
+
+    # Kamera online ise yeni model ile tekrar başlat
+    model_meta = camera_model.model
+    model_path = model_meta.path
+    task_type = getattr(model_meta, "task_type", "ppe") or "ppe"
+
+    if (cam.status or "").lower() != "offline":
+        print(
+            f"[activate_model_for_camera] Restarting camera {camera_id} with model "
+            f"{model_meta.id} ({model_meta.version}) path='{model_path}' task='{task_type}'"
+        )
+        start_camera_thread(
+            cam.id,
+            cam.rtsp_url,
+            model_path=model_path,
+            model_task=task_type,
+            use_default_model=False,
+        )
+    else:
+        print(
+            f"[activate_model_for_camera] Camera {camera_id} is offline, "
+            "skipping automatic restart after model activation"
+        )
 
     return {
         "status": "success",
@@ -1483,9 +1560,6 @@ async def detect(
                 "message": "Model yolu geçersiz. Lütfen bir model aktif edin."
             }
         
-        # Modeli yükle
-        from ultralytics import YOLO
-        
         model_full_path = model_path
         if not Path(model_full_path).exists():
             return {
@@ -1504,8 +1578,8 @@ async def detect(
                 "message": "Resim dosyası okunamadı. Lütfen geçerli bir resim seçin."
             }
         
-        # YOLO modelini yükle ve çalıştır
-        model = YOLO(model_full_path)
+        # YOLO modelini (cache'li) yükle ve çalıştır
+        model = get_model(model_full_path)
         results = model(img)
         
         # Sonuçları işle
