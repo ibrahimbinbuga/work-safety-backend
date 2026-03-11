@@ -152,7 +152,7 @@ def run_camera_thread(
                     print(f"[CameraRunner][Camera {camera_id}] RTSP stream not accessible (timeout or error), falling back to local camera (0)")
                     if test_error[0]:
                         print(f"[CameraRunner][Camera {camera_id}] RTSP error: {test_error[0]}")
-                    source = 0  # Fallback to local camera
+                    return  # Fallback to local camera
             
             # Open camera with OpenCV first, then run model.predict() on each frame
             # This avoids fuse() issues with model.track() or model.predict(stream=True)
@@ -225,7 +225,7 @@ def run_camera_thread(
             results = None
         frame_count = 0
         # Violation check interval: check violations every 4 seconds
-        VIOLATION_CHECK_INTERVAL = 4.0  # seconds
+        VIOLATION_CHECK_INTERVAL = 20.0  # seconds
         last_violation_check_time = time.time()
         
         if use_model:

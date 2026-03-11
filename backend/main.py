@@ -745,6 +745,14 @@ async def api_start_local_camera(
         if not cam:
             return {"error": "camera not found"}
         
+        # If camera is offline, don't start it
+        if (cam.status or "").lower() == "offline":
+            return {
+                "status": "not_started",
+                "reason": "camera status is offline",
+                "camera_id": camera_id,
+            }
+        
         # Verify company access to this camera
         if current_user.role != "admin":
             # Check if the camera belongs to the user's company
@@ -1433,6 +1441,10 @@ async def startup_event():
             if cameras:
                 print(f"[startup] 📹 {len(cameras)} kamera bulundu, başlatılıyor...")
                 for cam in cameras:
+                    # Skip cameras that are marked as offline
+                    if (cam.status or "").lower() == "offline":
+                        print(f"[startup] ⏭️ Skipping camera {cam.id} (name: {cam.name}) because status='{cam.status}'")
+                        continue
                     print(f"[startup] Starting camera: {cam.id} (name: {cam.name}, rtsp: {cam.rtsp_url})")
                     # Kamera için aktif model (varsa) ile başlat
                     model_meta = await get_active_model_for_camera(session, cam.company_id, cam.id)
