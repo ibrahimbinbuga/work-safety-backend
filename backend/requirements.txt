@@ -9,3 +9,6 @@ python-jose[cryptography]
 passlib[bcrypt]
 bcrypt
 python-multipart
+opencv-python
+ultralytics
+argon2-cffi
