@@ -4,9 +4,10 @@ import { Camera, Plus, Wifi, WifiOff, MoreVertical, RefreshCw } from 'lucide-rea
 import { useAuth } from '../context/AuthContext';
 
 export const Cameras = () => {
-  const { isAdmin, activeCompanyCode } = useAuth();
+  const { isAdmin, activeCompanyCode, token } = useAuth();
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
+  const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
   // Backend'den veri çekme
   const fetchCameras = async () => {
@@ -92,9 +93,9 @@ export const Cameras = () => {
                 {/* Kamera Önizleme Alanı */}
                 <div className="bg-gray-900 aspect-video flex items-center justify-center relative group overflow-hidden">
                     {/* Canlı Stream Görüntüsü */}
-                    {camera.status === 'online' ? (
+                    {camera.status === 'online' && token ? (
                         <img 
-                            src={`http://127.0.0.1:8000/api/camera/${camera.id}/stream`}
+                        src={`${apiBaseUrl}/api/camera/${camera.id}/stream?token=${encodeURIComponent(token || '')}`}
                             alt={`${camera.name} live feed`}
                             className="w-full h-full object-contain"
                             style={{ minHeight: '100%' }}

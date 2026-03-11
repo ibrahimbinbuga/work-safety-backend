@@ -44,6 +44,7 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 # Global structures to manage camera threads and queue
 camera_threads = {}  # camera_id -> {'thread': Thread, 'stop_event': Event}
@@ -573,6 +574,65 @@ async def delete_user(
 
 # ===== Protected Camera Endpoints =====
 
+async def get_camera_active_models(db: AsyncSession, company_id: int, camera_id: int) -> list[dict]:
+    """
+    Return active model metadata for the given company/camera.
+    Currently model activation is company-level, so camera_id is kept for API compatibility.
+    """
+    result = await db.execute(
+        select(models.ModelMeta)
+        .join(models.CompanyModel, models.CompanyModel.model_id == models.ModelMeta.id)
+        .where(
+            (models.CompanyModel.company_id == company_id) &
+            (models.CompanyModel.is_active == True)
+        )
+        .order_by(models.ModelMeta.uploaded_at.desc())
+    )
+    model_rows = result.scalars().all()
+
+    return [
+        {
+            "id": m.id,
+            "name": m.version,
+            "version": m.version,
+            "path": m.path,
+            "description": m.description,
+        }
+        for m in model_rows
+    ]
+
+
+def camera_to_dict(cam: models.Camera, active_models: Optional[list[dict]] = None, model_is_active: Optional[bool] = None) -> dict:
+    """Serialize camera row with model assignment info for frontend usage."""
+    active_models = active_models or []
+    if model_is_active is None:
+        model_is_active = len(active_models) > 0
+
+    return {
+        "id": cam.id,
+        "name": cam.name,
+        "location": cam.location,
+        "rtsp_url": cam.rtsp_url,
+        "status": cam.status,
+        "company_id": cam.company_id,
+        "last_active": cam.last_active.isoformat() if cam.last_active else None,
+        "model_is_active": model_is_active,
+        "active_models": active_models,
+    }
+
+
+async def get_active_model_path_for_camera(db: AsyncSession, company_id: int, camera_id: int) -> Optional[str]:
+    """
+    Resolve model path for a camera.
+    Priority: company's active assigned model, then global ACTIVE_MODEL_PATH.
+    """
+    active_models = await get_camera_active_models(db, company_id, camera_id)
+    if active_models:
+        model_path = active_models[0].get("path")
+        if model_path:
+            return model_path
+    return get_active_model_path()
+
 @app.get("/api/cameras")
 async def get_cameras(
     current_user: TokenData = Depends(get_current_user),
@@ -808,10 +868,44 @@ async def debug_camera_status(admin_user: TokenData = Depends(get_admin_user)):
     return status
 
 @app.get("/api/camera/{camera_id}/stream")
-async def stream_camera(camera_id: int, current_user: TokenData = Depends(get_current_user)):
+async def stream_camera(
+    camera_id: int,
+    token: Optional[str] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security),
+    db: AsyncSession = Depends(get_db),
+):
     """
     MJPEG stream endpoint for live camera feed with detections.
     """
+    raw_token = token or (credentials.credentials if credentials else None)
+    if not raw_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication token")
+
+    token_data = decode_access_token(raw_token)
+    if token_data is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+    user = await db.get(models.User, token_data.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
+
+    if token_data.role != "admin":
+        company_result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == func.upper(token_data.company_code)
+            )
+        )
+        company = company_result.scalar_one_or_none()
+        if not company or cam.company_id != company.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera",
+            )
+
     # Create a placeholder black frame
     placeholder_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.putText(placeholder_frame, "No frame available", (150, 240), 
@@ -969,6 +1063,200 @@ async def get_models(current_user: TokenData = Depends(get_current_user)):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
+
+
+def general_model_to_dict(model: models.ModelMeta) -> dict:
+    """Frontend'in general model formatı için ModelMeta'yı normalize eder."""
+    return {
+        "id": model.id,
+        "name": model.version,
+        "version": model.version,
+        "description": model.description,
+        "path": model.path,
+        "uploaded_at": model.uploaded_at.isoformat() if model.uploaded_at else "",
+        "is_active": model.is_active,
+    }
+
+
+@app.get("/api/general-models")
+async def get_general_models(
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Tüm genel modelleri döndürür."""
+    result = await db.execute(select(models.ModelMeta).order_by(models.ModelMeta.uploaded_at.desc()))
+    models_list = result.scalars().all()
+    return [general_model_to_dict(m) for m in models_list]
+
+
+@app.get("/api/company/{company_code}/general-models")
+async def get_company_general_models(
+    company_code: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Şirkete atanmış genel modelleri döndürür."""
+    await verify_company_access(current_user, company_code)
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+
+    result = await db.execute(
+        select(models.ModelMeta)
+        .join(models.CompanyModel, models.CompanyModel.model_id == models.ModelMeta.id)
+        .where(models.CompanyModel.company_id == company.id)
+        .order_by(models.ModelMeta.uploaded_at.desc())
+    )
+    models_list = result.scalars().all()
+    return [general_model_to_dict(m) for m in models_list]
+
+
+@app.put("/api/company/{company_code}/general-models")
+async def set_company_general_models(
+    company_code: str,
+    payload: dict,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Şirkete atanacak model listesini toplu günceller. Body: { model_ids: number[] }"""
+    model_ids = payload.get("model_ids", []) if isinstance(payload, dict) else []
+    if not isinstance(model_ids, list):
+        raise HTTPException(status_code=400, detail="model_ids list olmalıdır")
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+
+    # Mevcut atamaları temizle
+    await db.execute(
+        models.CompanyModel.__table__.delete().where(models.CompanyModel.company_id == company.id)
+    )
+
+    if model_ids:
+        valid_models_result = await db.execute(
+            select(models.ModelMeta.id).where(models.ModelMeta.id.in_(model_ids))
+        )
+        valid_model_ids = set(valid_models_result.scalars().all())
+        for model_id in model_ids:
+            if model_id in valid_model_ids:
+                db.add(models.CompanyModel(company_id=company.id, model_id=model_id, is_active=False))
+
+    await db.commit()
+    return {"status": "success", "assigned_count": len(model_ids)}
+
+
+@app.get("/api/company/{company_code}/model-cameras")
+async def get_company_model_cameras(
+    company_code: str,
+    model_id: Optional[int] = None,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Şirket kameralarını döndürür.
+    Not: Mevcut şemada kamera-model eşleşmesi olmadığı için model_is_active company-level hesaplanır.
+    """
+    await verify_company_access(current_user, company_code)
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+
+    cameras_result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company.id)
+    )
+    cameras = cameras_result.scalars().all()
+
+    active_model_ids_result = await db.execute(
+        select(models.CompanyModel.model_id)
+        .where(
+            (models.CompanyModel.company_id == company.id) &
+            (models.CompanyModel.is_active == True)
+        )
+    )
+    active_model_ids = set(active_model_ids_result.scalars().all())
+
+    selected_model_is_active = (model_id in active_model_ids) if model_id is not None else bool(active_model_ids)
+    active_models = []
+    if active_model_ids:
+        active_models = await get_camera_active_models(db, company.id, cameras[0].id if cameras else 0)
+
+    response = []
+    for cam in cameras:
+        response.append(
+            camera_to_dict(
+                cam,
+                active_models=active_models,
+                model_is_active=selected_model_is_active,
+            )
+        )
+    return response
+
+
+@app.put("/api/company/{company_code}/model-cameras")
+async def set_company_model_cameras(
+    company_code: str,
+    payload: dict,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Model-kamera ataması günceller.
+    Not: Şu an DB şemasında kamera-model ilişki tablosu olmadığı için company-level aktiflik uygulanır.
+    Body: { model_id: number, camera_ids: number[] }
+    """
+    await verify_company_access(current_user, company_code)
+
+    model_id = payload.get("model_id") if isinstance(payload, dict) else None
+    camera_ids = payload.get("camera_ids", []) if isinstance(payload, dict) else []
+
+    if model_id is None:
+        raise HTTPException(status_code=400, detail="model_id zorunludur")
+    if not isinstance(camera_ids, list):
+        raise HTTPException(status_code=400, detail="camera_ids list olmalıdır")
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+
+    # Önce şirketteki tüm model aktifliklerini kapat
+    await db.execute(
+        update(models.CompanyModel)
+        .where(models.CompanyModel.company_id == company.id)
+        .values(is_active=False)
+    )
+
+    # Kamera seçiliyse ilgili modeli company-level aktif yap
+    if len(camera_ids) > 0:
+        await db.execute(
+            update(models.CompanyModel)
+            .where(
+                (models.CompanyModel.company_id == company.id) &
+                (models.CompanyModel.model_id == int(model_id))
+            )
+            .values(is_active=True)
+        )
+
+    await db.commit()
+    return {
+        "status": "success",
+        "model_id": int(model_id),
+        "selected_camera_count": len(camera_ids),
+        "note": "Camera-level model mapping is not available in current DB schema; company-level activation was applied."
+    }
 
 # ===== Company Model Management Endpoints =====
 
