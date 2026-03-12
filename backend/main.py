@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
-from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status
+from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from fastapi.security import HTTPBearer
@@ -184,6 +184,26 @@ def stop_camera_thread(camera_id: int):
     camera_threads.pop(camera_id, None)
 
 
+async def stop_company_cameras(db: AsyncSession, company_id: int, trigger: str = "manual") -> int:
+    """Stop running camera threads for a company."""
+    result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company_id)
+    )
+    cameras = result.scalars().all()
+
+    stopped_count = 0
+    for cam in cameras:
+        if cam.id in camera_threads:
+            stop_camera_thread(cam.id)
+            stopped_count += 1
+
+    print(
+        f"[camera-stop] trigger={trigger} company_id={company_id} "
+        f"total={len(cameras)} stopped={stopped_count}"
+    )
+    return stopped_count
+
+
 async def restart_camera_with_current_models(db: AsyncSession, camera: models.Camera, force_local: bool = False):
     """Restart camera thread with current active model mapping."""
     stop_camera_thread(camera.id)
@@ -346,6 +366,33 @@ def start_camera_thread(
     camera_threads[camera_id] = {'thread': thread, 'stop_event': stop_event}
     thread.start()
     print(f"[start_camera_thread] Started camera thread for {camera_id}")
+
+
+async def ensure_company_cameras_started(db: AsyncSession, company_id: int, trigger: str = "manual") -> int:
+    """Start camera threads for a company only if they are not already running."""
+    result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company_id)
+    )
+    cameras = result.scalars().all()
+
+    started_count = 0
+    for cam in cameras:
+        existing = camera_threads.get(cam.id)
+        if existing:
+            if existing['thread'].is_alive():
+                continue
+            # Clean stale thread entries before restarting.
+            camera_threads.pop(cam.id, None)
+
+        model_paths = await get_active_model_paths_for_camera(db, cam.company_id, cam.id)
+        start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
+        started_count += 1
+
+    print(
+        f"[camera-start] trigger={trigger} company_id={company_id} "
+        f"total={len(cameras)} started={started_count}"
+    )
+    return started_count
 
 async def violation_consumer_task(queue: asyncio.Queue):
     """
@@ -539,6 +586,14 @@ async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db))
         role=user.role,
         company_code=login_request.company_code
     )
+
+    # Start company cameras only for regular user logins.
+    if user.role == "user" and user.company_id is not None:
+        await ensure_company_cameras_started(
+            db,
+            user.company_id,
+            trigger=f"user-login:{user.id}",
+        )
     
     return Token(
         access_token=access_token,
@@ -562,11 +617,68 @@ async def get_current_user_info(current_user: TokenData = Depends(get_current_us
 
 
 @app.post("/api/auth/logout")
-async def logout(current_user: TokenData = Depends(get_current_user)):
+async def logout(
+    payload: Optional[dict] = Body(default=None),
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Logout endpoint (token invalidation should be handled on client side).
     """
-    return {"status": "success", "message": "Logged out successfully"}
+    target_company_code: Optional[str] = None
+
+    # Regular users always stop their own company cameras on logout.
+    if current_user.role == "user":
+        target_company_code = current_user.company_code
+    elif current_user.role == "admin":
+        requested_code = (payload or {}).get("company_code")
+        if requested_code and not is_admin_company_code(requested_code):
+            target_company_code = requested_code
+
+    stopped_count = 0
+    if target_company_code:
+        company_result = await db.execute(
+            select(models.Company).where(func.upper(models.Company.code) == func.upper(target_company_code))
+        )
+        company = company_result.scalar_one_or_none()
+        if company:
+            stopped_count = await stop_company_cameras(
+                db,
+                company.id,
+                trigger=f"logout:{current_user.user_id}",
+            )
+
+    return {
+        "status": "success",
+        "message": "Logged out successfully",
+        "stopped_cameras": stopped_count,
+    }
+
+
+@app.post("/api/auth/select-company/{company_code}")
+async def select_company_for_admin(
+    company_code: str,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin şirket seçtiğinde ilgili şirketin kamera thread'lerini başlatır."""
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    started_count = await ensure_company_cameras_started(
+        db,
+        company.id,
+        trigger=f"admin-select:{admin_user.user_id}",
+    )
+    return {
+        "status": "success",
+        "company_code": company.code,
+        "started_cameras": started_count,
+    }
 
 
 @app.get("/api/companies", response_model=list[CompanyResponse])
@@ -1777,30 +1889,11 @@ async def startup_event():
     consumer_task = asyncio.create_task(violation_consumer_task(violation_queue))
     
 
-    # ­şôî Model'i arka planda ├Ân-y├╝kle (bloke etmez)
-    model_path = get_active_model_path()
-    if model_path and Path(model_path).exists():
-        print(f"[startup] ­şÜÇ Modeli arka planda ├Ân-y├╝kl├╝yoruz: {model_path}")
-        preload_model_async(model_path)
-        print(f"[startup] Ô£à Model ├Ân-y├╝kleme ba┼şlat─▒ld─▒ (kamera donmayacak)")
-    
-    # ­şôî T├╝m kameralar─▒ otomatik ba┼şlat 
-    try:
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(models.Camera))
-            cameras = result.scalars().all()
-            if cameras:
-                print(f"[startup] ­şô╣ {len(cameras)} kamera bulundu, ba┼şlat─▒l─▒yor...")
-                for cam in cameras:
-                    print(f"[startup] Starting camera: {cam.id} (name: {cam.name}, rtsp: {cam.rtsp_url})")
-                    model_paths = await get_active_model_paths_for_camera(session, cam.company_id, cam.id)
-                    start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
-            else:
-                print(f"[startup] ÔÜá´©Å Hi├ğ kamera bulunamad─▒")
-    except Exception as e:
-        print(f"[startup] ÔØî Kamera ba┼şlatma hatas─▒: {e}")
-        import traceback
-        traceback.print_exc()
+    # Kamera thread'leri startup'ta otomatik başlatılmaz.
+    # Başlatma tetikleri:
+    # - Regular user login
+    # - Admin company selection
+    print("[startup] Camera auto-start disabled. Waiting for login/company selection trigger.")
 
 # Detect endpoint'i ekleyin
 @app.post("/api/detect")

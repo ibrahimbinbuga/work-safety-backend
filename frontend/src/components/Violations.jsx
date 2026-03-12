@@ -142,12 +142,14 @@ export function Violations() {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [sortByDate, setSortByDate] = useState('newest');
   const [violations, setViolations] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     fetchViolations();
   }, [activeCompanyCode]);
 
   const fetchViolations = async () => {
+    setIsLoading(true);
     try {
       const violationsUrl = addCompanyCodeToUrl('/api/violations', activeCompanyCode);
       const response = await apiClient.get(violationsUrl);
@@ -165,6 +167,8 @@ export function Violations() {
       setViolations(processed);
     } catch (error) {
       console.error("Violations fetch error:", error);
+    } finally {
+      setIsLoading(false);
     }
   };
   const updateStatus = async (violationId, newStatus) => {
@@ -448,7 +452,13 @@ export function Violations() {
             </tbody>
           </table>
           
-          {filteredAndSortedViolations.length === 0 && (
+            {isLoading && (
+              <div className="text-center py-10 text-gray-500">
+                <p>Loading violations...</p>
+              </div>
+            )}
+
+            {!isLoading && filteredAndSortedViolations.length === 0 && (
               <div className="text-center py-10 text-gray-500">
                   <p>No violations found matching the filters.</p>
               </div>

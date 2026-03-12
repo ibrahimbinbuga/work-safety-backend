@@ -92,12 +92,13 @@ export const apiCall = async (endpoint, options = {}) => {
 /**
  * Logout from API
  */
-export const logout = async () => {
+export const logout = async (companyCode = null) => {
   try {
     const token = getAuthToken();
     if (token) {
       await apiCall('/api/auth/logout', {
         method: 'POST',
+        body: JSON.stringify({ company_code: companyCode }),
       });
     }
   } catch (err) {
@@ -188,6 +189,16 @@ export const uploadFile = async (endpoint, formData, options = {}) => {
  */
 export const getCompanies = async () => {
   return get('/api/companies');
+};
+
+/**
+ * Notify backend when admin selects a company context.
+ */
+export const selectAdminCompanyContext = async (companyCode) => {
+  if (!companyCode) {
+    throw new Error('Company code is required');
+  }
+  return post(`/api/auth/select-company/${encodeURIComponent(companyCode)}`, {});
 };
 
 /**

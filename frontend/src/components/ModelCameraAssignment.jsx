@@ -6,6 +6,8 @@ export function ModelCameraAssignment() {
   const { isAdmin, activeCompanyCode } = useAuth();
   const [cameras, setCameras] = useState([]);
   const [loadingCameras, setLoadingCameras] = useState(false);
+  const [loadingModels, setLoadingModels] = useState(true);
+  const [loadingAssignedModels, setLoadingAssignedModels] = useState(true);
   const [models, setModels] = useState([]);
   const [assignedModels, setAssignedModels] = useState([]);
   const [selectedAssignedModelIds, setSelectedAssignedModelIds] = useState([]);
@@ -75,6 +77,7 @@ export function ModelCameraAssignment() {
   };
 
   const fetchGeneralModels = async () => {
+    setLoadingModels(true);
     try {
       const response = await apiClient.get('/api/general-models');
       const list = Array.isArray(response.data) ? response.data : [];
@@ -82,11 +85,22 @@ export function ModelCameraAssignment() {
     } catch (error) {
       console.error('General model load error:', error);
       setModels([]);
+    } finally {
+      setLoadingModels(false);
     }
   };
 
   const fetchAssignedModels = async () => {
-    if (!activeCompanyCode) return;
+    if (!activeCompanyCode) {
+      setAssignedModels([]);
+      setSelectedAssignedModelIds([]);
+      setModelCameraOverview({});
+      setCameraSelectionByModel({});
+      setLoadingAssignedModels(false);
+      return;
+    }
+
+    setLoadingAssignedModels(true);
     try {
       const response = await apiClient.get(`/api/company/${activeCompanyCode}/general-models`);
       const list = Array.isArray(response.data) ? response.data : [];
@@ -99,6 +113,8 @@ export function ModelCameraAssignment() {
       setSelectedAssignedModelIds([]);
       setModelCameraOverview({});
       setCameraSelectionByModel({});
+    } finally {
+      setLoadingAssignedModels(false);
     }
   };
 
@@ -202,7 +218,9 @@ export function ModelCameraAssignment() {
         </div>
 
         {isAdmin ? (
-          models.length === 0 ? (
+          loadingModels ? (
+            <div className="text-sm text-gray-500">Loading models...</div>
+          ) : models.length === 0 ? (
             <div className="text-sm text-gray-500">No models uploaded yet.</div>
           ) : (
             <div className="space-y-2">
@@ -229,7 +247,9 @@ export function ModelCameraAssignment() {
             </div>
           )
         ) : (
-          assignedModels.length === 0 ? (
+          loadingAssignedModels ? (
+            <div className="text-sm text-gray-500">Loading assigned models...</div>
+          ) : assignedModels.length === 0 ? (
             <div className="text-sm text-gray-500">No models assigned to this company.</div>
           ) : (
             <div className="space-y-2">
@@ -263,7 +283,7 @@ export function ModelCameraAssignment() {
           </button>
         </div>
 
-        {loadingOverview || loadingCameras ? (
+        {loadingOverview || loadingCameras || loadingAssignedModels ? (
           <div className="text-center py-8 text-gray-500">Loading assignment overview...</div>
         ) : assignedModels.length === 0 ? (
           <div className="text-sm text-gray-500">No models assigned to this company.</div>
