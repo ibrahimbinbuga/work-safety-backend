@@ -1,9 +1,9 @@
-import { LayoutDashboard, Camera, BrainCircuit, AlertTriangle, FileText, Settings, X, LogOut } from 'lucide-react';
+import { LayoutDashboard, Camera, BrainCircuit, AlertTriangle, FileText, Settings, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import CompanySelector from './CompanySelector';
 
 export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
-  const { logout, user, isAdmin, activeCompanyCode } = useAuth();
+  const { isAdmin, activeCompanyCode } = useAuth();
 
   const generalItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -19,10 +19,6 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
     { id: 'companies', label: 'Companies', icon: FileText },
   ];
 
-  const handleLogout = () => {
-    logout();
-  };
-
   return (
     <>
       {/* Mobilde arka plan karartma */}
@@ -37,7 +33,7 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
         <div className="flex items-center justify-between h-16 px-6 border-b border-gray-100">
           <div className="flex items-center gap-2 font-bold text-xl text-blue-600">
             <Camera className="w-6 h-6" />
-            <span>SafetyWatch</span>
+            <span>W.S.A.</span>
           </div>
           <button onClick={() => setIsOpen(false)} className="lg:hidden">
             <X className="w-6 h-6 text-gray-500" />
@@ -57,13 +53,13 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
                     setActivePage(item.id);
                     if (window.innerWidth < 1024) setIsOpen(false);
                   }}
-                  className={`flex items-center w-full gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
+                  className={`flex items-center w-full gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors text-left ${
                     isActive 
                       ? 'bg-blue-50 text-blue-600' 
                       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                   }`}
                 >
-                  <Icon className="w-5 h-5" />
+                  <Icon className="w-5 h-5 shrink-0" />
                   {item.label}
                 </button>
               );
@@ -83,13 +79,13 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
                         setActivePage(item.id);
                         if (window.innerWidth < 1024) setIsOpen(false);
                       }}
-                      className={`flex items-center w-full gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
+                      className={`flex items-center w-full gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors text-left ${
                         isActive 
                           ? 'bg-blue-50 text-blue-600' 
                           : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                       }`}
                     >
-                      <Icon className="w-5 h-5" />
+                      <Icon className="w-5 h-5 shrink-0" />
                       {item.label}
                     </button>
                   );
@@ -99,37 +95,17 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
           )}
         </nav>
 
-        {/* User info and logout */}
+        {/* Bottom: company selector / company display */}
         <div className="border-t border-gray-200 p-4">
-          {/* Company info for admins */}
           {isAdmin && (
-            <div className="mb-4">
-              <CompanySelector onCompanySelect={() => setActivePage('dashboard')} />
-            </div>
+            <CompanySelector onCompanySelect={() => setActivePage('dashboard')} />
           )}
-
-          {/* Company display for users */}
           {!isAdmin && activeCompanyCode && (
-            <div className="mb-3 px-4 py-2 bg-blue-50 rounded-lg border border-blue-200">
+            <div className="px-4 py-2 bg-blue-50 rounded-lg border border-blue-200">
               <p className="text-xs font-semibold text-gray-600">Company</p>
               <p className="text-sm font-medium text-blue-900 truncate">{activeCompanyCode}</p>
             </div>
           )}
-
-          <div className="mb-3 px-4 py-2 bg-gray-50 rounded-lg">
-            <p className="text-xs font-semibold text-gray-600">Logged in as</p>
-            <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>
-            <p className="text-xs text-gray-500 mt-1 capitalize">
-              {user?.role === 'admin' ? '👨‍💼 Administrator' : '👤 User'}
-            </p>
-          </div>
-          <button
-            onClick={handleLogout}
-            className="flex items-center w-full gap-3 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            <LogOut className="w-5 h-5" />
-            Logout
-          </button>
         </div>
       </div>
     </>

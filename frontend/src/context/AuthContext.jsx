@@ -12,16 +12,51 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const clearStoredAuth = () => {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('user');
+    localStorage.removeItem('companyCode');
+    setToken(null);
+    setUser(null);
+    setCompanyCode(null);
+    setActiveCompanyCode(null);
+  };
+
+  const validateToken = async (candidateToken) => {
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/auth/me`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${candidateToken}`,
+        },
+      });
+      return res.ok;
+    } catch (e) {
+      return false;
+    }
+  };
+
   // Initialize auth state from localStorage
   useEffect(() => {
+    let isMounted = true;
+
+    const initializeAuth = async () => {
     const storedToken = localStorage.getItem('accessToken');
     const storedUser = localStorage.getItem('user');
     const storedCompanyCode = localStorage.getItem('companyCode');
     
     if (storedToken && storedUser) {
-      setToken(storedToken);
       try {
+        const tokenIsValid = await validateToken(storedToken);
+        if (!tokenIsValid) {
+          if (isMounted) clearStoredAuth();
+          return;
+        }
+
         const parsedUser = JSON.parse(storedUser);
+        if (!isMounted) return;
+
+        setToken(storedToken);
         setUser(parsedUser);
         
         // Restore companyCode
@@ -35,10 +70,17 @@ export const AuthProvider = ({ children }) => {
         }
       } catch (e) {
         console.error('Failed to parse stored user:', e);
-        localStorage.removeItem('user');
+        if (isMounted) clearStoredAuth();
       }
     }
-    setLoading(false);
+    if (isMounted) setLoading(false);
+    };
+
+    initializeAuth();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const login = async (email, password, companyCode) => {

@@ -1,8 +1,26 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, CheckCircle, Clock } from 'lucide-react';
 import { apiClient, addCompanyCodeToUrl } from '../utils/api';
-import { useEffect } from "react";
 import { useAuth } from '../context/AuthContext';
+
+const formatTurkishDate = (raw) => {
+  if (!raw) return '-';
+  try {
+    const d = new Date(raw);
+    if (isNaN(d)) return raw;
+    return d.toLocaleString('tr-TR', {
+      timeZone: 'Europe/Istanbul',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return raw;
+  }
+};
 
 // Şimdilik statik veri (İleride Backend'den çekilecek)
 /*const initialViolations = [
@@ -65,6 +83,51 @@ import { useAuth } from '../context/AuthContext';
 
 
 
+const statusOptions = [
+  { value: 'pending',  label: 'Pending',  classes: 'bg-blue-50 text-blue-700 border-blue-100' },
+  { value: 'reviewed', label: 'Reviewed', classes: 'bg-yellow-50 text-yellow-700 border-yellow-100' },
+  { value: 'resolved', label: 'Resolved', classes: 'bg-green-50 text-green-700 border-green-100' },
+];
+
+function StatusDropdown({ violationId, currentStatus, onUpdate }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const current = statusOptions.find(o => o.value === currentStatus) || statusOptions[0];
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div className="relative inline-block" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium capitalize border cursor-pointer hover:opacity-80 transition-opacity ${current.classes}`}
+      >
+        {current.label}
+        <ChevronDown className="w-3 h-3" />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+          {statusOptions.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => { onUpdate(violationId, opt.value); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 text-xs font-medium hover:bg-gray-50 transition-colors ${
+                opt.value === currentStatus ? 'font-semibold bg-gray-50' : ''
+              }`}
+            >
+              <span className={`inline-block px-2 py-0.5 rounded-full border ${opt.classes}`}>{opt.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Violations() {
   const { isAdmin, activeCompanyCode } = useAuth();
   const [filterType, setFilterType] = useState('all');
@@ -81,13 +144,13 @@ export function Violations() {
       const response = await apiClient.get(violationsUrl);
 
       const processed = response.data.map(v => ({
-        id: v.violation_id,
+        id: v.id,
         workerName: "Unknown Worker",
         camera: v.ihlal_yapilan_bolge,
         type: v.ihlal_cesidi,
         timestamp: v.tarih_saat,
         severity: "high",
-        status: "pending"
+        status: v.review_status || 'pending'
       }));
 
       setViolations(processed);
@@ -95,7 +158,19 @@ export function Violations() {
       console.error("Violations fetch error:", error);
     }
   };
-
+  const updateStatus = async (violationId, newStatus) => {
+    // Optimistic update: change UI immediately, rollback on error
+    const previousViolations = [...violations];
+    setViolations(prev =>
+      prev.map(v => v.id === violationId ? { ...v, status: newStatus } : v)
+    );
+    try {
+      await apiClient.patch(`/api/violations/${violationId}/status`, { review_status: newStatus });
+    } catch (error) {
+      console.error('Status update error:', error);
+      setViolations(previousViolations); // rollback
+    }
+  };
   // Filtreleme Mantığı
   const filteredViolations = violations.filter(v => {
     const typeMatch = filterType === 'all' || (filterType === 'helmet' && v.type === 'head') || v.type === filterType;
@@ -272,7 +347,7 @@ export function Violations() {
                   <td className="p-4">
                     <div className="flex items-center gap-2 text-gray-500">
                       <Calendar className="w-4 h-4" />
-                      <span className="text-sm">{violation.timestamp}</span>
+                      <span className="text-sm">{formatTurkishDate(violation.timestamp)}</span>
                     </div>
                   </td>
                   <td className="p-4">
@@ -284,12 +359,11 @@ export function Violations() {
                     </span>
                   </td>
                   <td className="p-4">
-                    <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium capitalize border
-                      ${violation.status === 'pending' ? 'bg-blue-50 text-blue-700 border-blue-100' : 
-                        violation.status === 'reviewed' ? 'bg-yellow-50 text-yellow-700 border-yellow-100' : 
-                        'bg-green-50 text-green-700 border-green-100'}`}>
-                      {violation.status}
-                    </span>
+                    <StatusDropdown
+                      violationId={violation.id}
+                      currentStatus={violation.status}
+                      onUpdate={updateStatus}
+                    />
                   </td>
                   <td className="p-4">
                     <button className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors border border-gray-200 px-2 py-1 rounded-md text-xs font-medium hover:border-blue-200 hover:bg-blue-50">

@@ -84,10 +84,15 @@ class StateController:
         current_time = time.time()
         logs = []
 
-        person_detections = [d for d in detections if d['class_id'] == 3]
-        helmet_detections = [d for d in detections if d['class_id'] == 0]
-        vest_detections = [d for d in detections if d['class_id'] == 1]
-        head_detections = [d for d in detections if d['class_id'] == 2]
+        def is_class(det: dict, canonical: str, fallback_id: int) -> bool:
+            if det.get('canonical_class') == canonical:
+                return True
+            return det.get('class_id') == fallback_id
+
+        person_detections = [d for d in detections if is_class(d, 'person', 3)]
+        helmet_detections = [d for d in detections if is_class(d, 'helmet', 0)]
+        vest_detections = [d for d in detections if is_class(d, 'vest', 1)]
+        head_detections = [d for d in detections if is_class(d, 'head', 2)]
 
         # process standalone heads (without person) as virtual workers
         head_detections_without_person = []
