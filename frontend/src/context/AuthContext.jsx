@@ -8,18 +8,28 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [companyCode, setCompanyCode] = useState(null);
-  const [activeCompanyCode, setActiveCompanyCode] = useState(null);
+  const [activeCompanyCode, setActiveCompanyCodeState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  const setActiveCompanyCode = (nextCompanyCode) => {
+    setActiveCompanyCodeState(nextCompanyCode);
+    if (nextCompanyCode) {
+      localStorage.setItem('activeCompanyCode', nextCompanyCode);
+    } else {
+      localStorage.removeItem('activeCompanyCode');
+    }
+  };
 
   const clearStoredAuth = () => {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('user');
     localStorage.removeItem('companyCode');
+    localStorage.removeItem('activeCompanyCode');
     setToken(null);
     setUser(null);
     setCompanyCode(null);
-    setActiveCompanyCode(null);
+    setActiveCompanyCodeState(null);
   };
 
   const validateToken = async (candidateToken) => {
@@ -44,6 +54,7 @@ export const AuthProvider = ({ children }) => {
     const storedToken = localStorage.getItem('accessToken');
     const storedUser = localStorage.getItem('user');
     const storedCompanyCode = localStorage.getItem('companyCode');
+    const storedActiveCompanyCode = localStorage.getItem('activeCompanyCode');
     
     if (storedToken && storedUser) {
       try {
@@ -66,7 +77,12 @@ export const AuthProvider = ({ children }) => {
         
         // For regular users, also restore activeCompanyCode
         if (parsedUser.role === 'user' && storedCompanyCode) {
-          setActiveCompanyCode(storedCompanyCode);
+          setActiveCompanyCodeState(storedCompanyCode);
+        }
+
+        // For admins, restore last selected company after refresh
+        if (parsedUser.role === 'admin' && storedActiveCompanyCode) {
+          setActiveCompanyCodeState(storedActiveCompanyCode);
         }
       } catch (e) {
         console.error('Failed to parse stored user:', e);
@@ -127,6 +143,8 @@ export const AuthProvider = ({ children }) => {
       // For admins, activeCompanyCode will be set when they select a company
       if (data.role === 'user') {
         setActiveCompanyCode(data.company_code);
+      } else {
+        setActiveCompanyCode(null);
       }
 
       return true;
@@ -150,11 +168,12 @@ export const AuthProvider = ({ children }) => {
       setToken(null);
       setUser(null);
       setCompanyCode(null);
-      setActiveCompanyCode(null);
+      setActiveCompanyCodeState(null);
       setError(null);
       localStorage.removeItem('accessToken');
       localStorage.removeItem('user');
       localStorage.removeItem('companyCode');
+      localStorage.removeItem('activeCompanyCode');
     }
   };
 

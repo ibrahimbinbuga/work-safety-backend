@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from typing import Optional
 import base64
 from datetime import datetime
+from pydantic import BaseModel
 from auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
     LoginRequest, Token, UserCreate, UserResponse, TokenData, is_admin, CompanyResponse
@@ -163,14 +164,46 @@ def get_active_model_path() -> str:
 
 
 async def get_active_model_paths_for_camera(db: AsyncSession, company_id: int, camera_id: int) -> list[str]:
-    """Resolve active model paths for a camera, falling back to global default model."""
+    """Resolve only explicitly active model paths for a company/camera pair."""
     active_models = await get_camera_active_models(db, company_id, camera_id)
     paths = [model.get("path") for model in active_models if model.get("path")]
-    if paths:
-        return paths
+    return paths
 
-    fallback_path = get_active_model_path()
-    return [fallback_path] if fallback_path else []
+
+def is_local_camera_source(source: Optional[str]) -> bool:
+    """Return True for local webcam-style numeric sources like '0' or 0."""
+    if source is None:
+        return False
+    if isinstance(source, int):
+        return True
+    return str(source).strip().isdigit()
+
+
+def normalize_camera_source(source: Optional[str]) -> str:
+    """Normalize camera source values so local source conflicts are detected consistently."""
+    if source is None:
+        return ""
+    return str(source).strip()
+
+
+def find_running_camera_with_source(source: Optional[str], exclude_camera_id: Optional[int] = None) -> Optional[int]:
+    """Find another running camera thread using the same source."""
+    normalized_source = normalize_camera_source(source)
+    if not normalized_source:
+        return None
+
+    for existing_camera_id, info in camera_threads.items():
+        if exclude_camera_id is not None and existing_camera_id == exclude_camera_id:
+            continue
+
+        thread = info.get('thread')
+        if not thread or not thread.is_alive():
+            continue
+
+        if info.get('source') == normalized_source:
+            return existing_camera_id
+
+    return None
 
 
 def stop_camera_thread(camera_id: int):
@@ -328,10 +361,8 @@ def start_camera_thread(
     if not resolved_model_paths and model_path:
         resolved_model_paths = [model_path]
 
-    if not resolved_model_paths and use_default_model:
-        fallback_path = get_active_model_path()
-        if fallback_path:
-            resolved_model_paths = [fallback_path]
+    # Intentionally do not fallback to global default model here.
+    # If no model is explicitly assigned, run camera as raw feed.
 
     if not resolved_model_paths:
         print(f"[start_camera_thread] ⚠️ Model yoksa bile kamera başlatılıyor (raw feed): camera_id={camera_id}")
@@ -353,6 +384,16 @@ def start_camera_thread(
         print(f"[start_camera_thread] ERROR: violation_queue is None, cannot start camera {camera_id}")
         return
 
+    normalized_source = normalize_camera_source(rtsp_url)
+    if is_local_camera_source(normalized_source):
+        conflicting_camera_id = find_running_camera_with_source(normalized_source, exclude_camera_id=camera_id)
+        if conflicting_camera_id is not None:
+            print(
+                f"[start_camera_thread] Skipping camera {camera_id}: local source '{normalized_source}' "
+                f"is already in use by camera {conflicting_camera_id}"
+            )
+            return
+
     print(
         f"[start_camera_thread] Creating thread for camera {camera_id} with rtsp_url='{rtsp_url}' "
         f"and model_paths='{resolved_model_paths}'"
@@ -363,7 +404,11 @@ def start_camera_thread(
         args=(camera_id, rtsp_url, resolved_model_paths, main_loop, violation_queue, stop_event),
         daemon=True
     )
-    camera_threads[camera_id] = {'thread': thread, 'stop_event': stop_event}
+    camera_threads[camera_id] = {
+        'thread': thread,
+        'stop_event': stop_event,
+        'source': normalized_source,
+    }
     thread.start()
     print(f"[start_camera_thread] Started camera thread for {camera_id}")
 
@@ -864,12 +909,17 @@ def camera_to_dict(cam: models.Camera, active_models: Optional[list[dict]] = Non
     if model_is_active is None:
         model_is_active = len(active_models) > 0
 
+    thread_info = camera_threads.get(cam.id)
+    has_running_thread = bool(thread_info and thread_info['thread'].is_alive())
+    has_recent_frame = get_latest_frame(cam.id) is not None
+    runtime_status = "online" if (has_running_thread and has_recent_frame) else "offline"
+
     return {
         "id": cam.id,
         "name": cam.name,
         "location": cam.location,
         "rtsp_url": cam.rtsp_url,
-        "status": cam.status,
+        "status": runtime_status,
         "company_id": cam.company_id,
         "last_active": cam.last_active.isoformat() if cam.last_active else None,
         "model_is_active": model_is_active,
@@ -880,14 +930,101 @@ def camera_to_dict(cam: models.Camera, active_models: Optional[list[dict]] = Non
 async def get_active_model_path_for_camera(db: AsyncSession, company_id: int, camera_id: int) -> Optional[str]:
     """
     Resolve model path for a camera.
-    Priority: camera's active assigned model, then global ACTIVE_MODEL_PATH.
+    Returns first explicitly active assigned model path for the camera.
     """
     active_model_paths = await get_active_model_paths_for_camera(db, company_id, camera_id)
     if active_model_paths:
         model_path = active_model_paths[0]
         if model_path:
             return model_path
-    return get_active_model_path()
+    return None
+
+
+class CameraCreateRequest(BaseModel):
+    name: str
+    location: Optional[str] = None
+    rtsp_url: str = "0"
+    company_code: Optional[str] = None
+
+
+@app.post("/api/cameras")
+async def create_camera(
+    camera_create: CameraCreateRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a camera under a company. Regular users can only create for their own company."""
+    target_company_code = camera_create.company_code
+
+    if current_user.role != "admin":
+        # Regular users are restricted to their own company.
+        if target_company_code and target_company_code.upper() != current_user.company_code.upper():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to create camera for this company"
+            )
+        target_company_code = current_user.company_code
+    else:
+        # Admin must provide a real company code when creating a company-scoped camera.
+        if not target_company_code or is_admin_company_code(target_company_code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Admin must provide a valid non-admin company_code"
+            )
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(target_company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    camera_name = (camera_create.name or "").strip()
+    if not camera_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Camera name is required")
+
+    source = (camera_create.rtsp_url or "").strip()
+    if not source:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="rtsp_url is required")
+
+    if is_local_camera_source(source):
+        existing_local_camera_result = await db.execute(
+            select(models.Camera).where(models.Camera.rtsp_url == source)
+        )
+        existing_local_camera = existing_local_camera_result.scalar_one_or_none()
+        if existing_local_camera:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Local camera source '{source}' is already assigned to camera "
+                    f"'{existing_local_camera.name}' (id={existing_local_camera.id}). "
+                    "Use a different RTSP source or delete the existing local camera first."
+                )
+            )
+
+    new_camera = models.Camera(
+        name=camera_name,
+        location=(camera_create.location or "").strip() or "-",
+        rtsp_url=source,
+        status="online",
+        company_id=company.id,
+    )
+
+    db.add(new_camera)
+    await db.commit()
+    await db.refresh(new_camera)
+
+    # Start the newly added camera immediately for the active company session.
+    model_paths = await get_active_model_paths_for_camera(db, company.id, new_camera.id)
+    start_camera_thread(
+        new_camera.id,
+        new_camera.rtsp_url,
+        model_paths=model_paths,
+        use_default_model=not model_paths,
+    )
+
+    active_models = await get_camera_active_models(db, company.id, new_camera.id)
+    return camera_to_dict(new_camera, active_models=active_models)
 
 @app.get("/api/cameras")
 async def get_cameras(
@@ -932,6 +1069,56 @@ async def get_cameras(
         response.append(camera_to_dict(cam, active_models=active_models))
 
     return response
+
+
+@app.delete("/api/cameras/{camera_id}")
+async def delete_camera(
+    camera_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a camera and stop its thread if running."""
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found"
+        )
+
+    if current_user.role != "admin":
+        company_result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == func.upper(current_user.company_code)
+            )
+        )
+        company = company_result.scalar_one_or_none()
+        if not company or cam.company_id != company.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera"
+            )
+
+    # Remove related rows first to satisfy FK constraints.
+    await db.execute(
+        delete(models.CompanyModelCamera).where(models.CompanyModelCamera.camera_id == camera_id)
+    )
+    await db.execute(
+        delete(models.Detection).where(models.Detection.camera_id == camera_id)
+    )
+    
+    # Delete the camera itself
+    await db.execute(
+        delete(models.Camera).where(models.Camera.id == camera_id)
+    )
+    await db.commit()
+    
+    # Only stop thread after successful DB commit
+    if camera_id in camera_threads:
+        stop_camera_thread(camera_id)
+
+    await ensure_company_cameras_started(db, cam.company_id, trigger=f"delete:{camera_id}")
+    
+    return {"status": "success", "camera_id": camera_id, "message": "Camera deleted"}
 
 
 @app.get("/api/detections")

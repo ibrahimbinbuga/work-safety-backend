@@ -16,9 +16,20 @@ import { Reporting } from './components/Reporting';
 import { Settings } from './components/Settings';
 
 function AppContent() {
-  const { isAuthenticated, user, isAdmin, activeCompanyCode } = useAuth();
+  const { isAuthenticated, user, isAdmin, activeCompanyCode, loading } = useAuth();
   const [activePage, setActivePage] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="mx-auto h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600"></div>
+          <p className="mt-4 text-sm text-gray-500">Restoring session...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <LoginPage onLoginSuccess={() => setActivePage('dashboard')} />;

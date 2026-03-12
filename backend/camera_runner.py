@@ -101,6 +101,15 @@ def _create_capture(source):
 
     return cap
 
+
+def _safe_read_frame(cap):
+    """Read a frame without letting OpenCV C++ exceptions kill the camera thread."""
+    try:
+        return cap.read()
+    except Exception as error:
+        print(f"[CameraRunner] OpenCV read failed: {error}")
+        return False, None
+
 def get_model(model_path: str):
     # Thread-safe model loading and caching (non-blocking after first load)
     global _MODEL_CACHE
@@ -490,7 +499,7 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
             consecutive_failures = 0
             reconnect_attempts = 0
             while not stop_event.is_set():
-                ret, frame = cap.read()
+                ret, frame = _safe_read_frame(cap)
                 if not ret:
                     if frame_count == 0:
                         print(f"[CameraRunner][Camera {camera_id}] ERROR: No frame received from camera!")
@@ -610,7 +619,7 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
             consecutive_failures = 0
             reconnect_attempts = 0
             while not stop_event.is_set():
-                ret, frame = cap.read()
+                ret, frame = _safe_read_frame(cap)
                 if not ret:
                     if frame_count == 0:
                         print(f"[CameraRunner][Camera {camera_id}] ERROR: No frame received from camera (no model)!")

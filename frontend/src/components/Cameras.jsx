@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react';
 import { apiClient } from '../utils/api';
-import { Camera, Plus, Wifi, WifiOff, MoreVertical, RefreshCw } from 'lucide-react';
+import { Camera, Plus, Wifi, WifiOff, RefreshCw, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export const Cameras = () => {
   const { isAdmin, activeCompanyCode, token } = useAuth();
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showAddCameraForm, setShowAddCameraForm] = useState(false);
+  const [newCameraName, setNewCameraName] = useState('');
+  const [newCameraLocation, setNewCameraLocation] = useState('');
+  const [newCameraSource, setNewCameraSource] = useState('0');
+  const [addingCamera, setAddingCamera] = useState(false);
+  const [addCameraError, setAddCameraError] = useState(null);
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
   // Backend'den veri çekme
@@ -43,6 +49,60 @@ export const Cameras = () => {
     return () => clearInterval(interval);
   }, [activeCompanyCode]);
 
+  const handleAddCamera = async () => {
+    const trimmedName = newCameraName.trim();
+    const trimmedSource = newCameraSource.trim();
+
+    if (!trimmedName) {
+      setAddCameraError('Camera name is required.');
+      return;
+    }
+
+    if (!trimmedSource) {
+      setAddCameraError('Camera source is required (0 or rtsp://...).');
+      return;
+    }
+
+    setAddingCamera(true);
+    setAddCameraError(null);
+    try {
+      await apiClient.post('/api/cameras', {
+        name: trimmedName,
+        location: newCameraLocation.trim(),
+        rtsp_url: trimmedSource,
+        company_code: activeCompanyCode || null,
+      });
+
+      setNewCameraName('');
+      setNewCameraLocation('');
+      setNewCameraSource('0');
+      setShowAddCameraForm(false);
+      await fetchCameras();
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      setAddCameraError(detail || 'Camera could not be created.');
+      console.error('Camera create error:', error);
+    } finally {
+      setAddingCamera(false);
+    }
+  };
+
+  const handleDeleteCamera = async (cameraId, cameraName) => {
+    const shouldDelete = window.confirm(`Delete camera \"${cameraName}\"?`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    try {
+      await apiClient.delete(`/api/cameras/${cameraId}`);
+      await fetchCameras();
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      alert(detail || 'Camera could not be deleted.');
+      console.error('Camera delete error:', error);
+    }
+  };
+
 
 
   // Admin control - must select a company before viewing cameras
@@ -66,18 +126,80 @@ export const Cameras = () => {
         </div>
         <div className="flex gap-3">
             <button 
-                onClick={fetchCameras} 
+                onClick={fetchCameras}
                 className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
                 title="Yenile"
             >
                 <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
             </button>
-            <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors">
+            <button
+            onClick={() => {
+              setAddCameraError(null);
+              setShowAddCameraForm(prev => !prev);
+            }}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            >
             <Plus className="w-4 h-4" />
             Add Camera
             </button>
         </div>
       </div>
+
+      {showAddCameraForm && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 space-y-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Add New Camera</h3>
+            <p className="text-sm text-gray-500 mt-1">
+              This camera will only belong to the selected company context.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <input
+              type="text"
+              value={newCameraName}
+              onChange={(e) => setNewCameraName(e.target.value)}
+              placeholder="Camera name (e.g. Laptop Cam)"
+              className="w-full bg-white border border-gray-300 text-gray-700 py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <input
+              type="text"
+              value={newCameraLocation}
+              onChange={(e) => setNewCameraLocation(e.target.value)}
+              placeholder="Location (optional)"
+              className="w-full bg-white border border-gray-300 text-gray-700 py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <input
+              type="text"
+              value={newCameraSource}
+              onChange={(e) => setNewCameraSource(e.target.value)}
+              placeholder="Source: 0 or rtsp://..."
+              className="w-full bg-white border border-gray-300 text-gray-700 py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+
+          {addCameraError && (
+            <p className="text-sm text-red-600">{addCameraError}</p>
+          )}
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleAddCamera}
+              disabled={addingCamera}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium disabled:bg-gray-300"
+            >
+              {addingCamera ? 'Adding...' : 'Create Camera'}
+            </button>
+            <button
+              onClick={() => setShowAddCameraForm(false)}
+              disabled={addingCamera}
+              className="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-60"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* --- YÜKLENİYOR DURUMU --- */}
       {loading && cameras.length === 0 ? (
@@ -147,9 +269,13 @@ export const Cameras = () => {
                         </div>
                     )}
 
-                    {/* Menü Butonu */}
-                    <button className="absolute top-2 right-2 p-1.5 bg-black/20 hover:bg-black/40 text-white rounded-full transition-colors opacity-0 group-hover:opacity-100 z-20">
-                        <MoreVertical className="w-4 h-4" />
+                    {/* Delete Button */}
+                    <button
+                      onClick={() => handleDeleteCamera(camera.id, camera.name)}
+                      className="absolute top-2 right-2 p-1.5 bg-black/20 hover:bg-red-600/80 text-white rounded-full transition-colors opacity-0 group-hover:opacity-100 z-20"
+                      title="Delete camera"
+                    >
+                      <Trash2 className="w-4 h-4" />
                     </button>
                 </div>
 
