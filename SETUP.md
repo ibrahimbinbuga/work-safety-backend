@@ -41,10 +41,16 @@ Bu seçeneği kullanın eğer:
 ### Adım 1: Projeyi Klonlayın
 
 ```bash
-cd c:\Users\Fethiye\Projeler\BitirmeProjesi
+# Çalışmak istediğiniz herhangi bir klasöre gidin
+cd <your-workspace-folder>
+
+# Projeyi klonlayın
 git clone <repo-url>
 cd work-safety-backend
 ```
+
+Not: Bu dokümanda URL standardı olarak `localhost` kullanılmıştır.
+`127.0.0.1` ve `localhost` aynı makineyi işaret eder; ekip içinde karışıklığı önlemek için tek formatta kalın.
 
 ### Adım 2: Docker ile Veritabanını Başlatın
 
@@ -175,7 +181,7 @@ uvicorn main:app --reload
 
 Başarılı çıktı:
 ```
-INFO:     Uvicorn running on http://127.0.0.1:8000
+INFO:     Uvicorn running on http://localhost:8000
 INFO:     Application startup complete
 ```
 
@@ -189,6 +195,10 @@ cd frontend
 
 # Node paketlerini yükle
 npm install
+
+# Frontend URL konfigürasyonu (frontend/.env)
+# Backend farklı host/port'ta çalışıyorsa bu değeri güncelleyin.
+echo VITE_API_URL=http://localhost:8000 > .env
 
 # Frontend'i geliştirme modunda başlat
 npm run dev
@@ -311,7 +321,7 @@ uvicorn main:app --reload
 INFO:     Started server process [12345]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://localhost:8000 (Press CTRL+C to quit)
 ```
 
 #### Terminal 3: Frontend (Vite)
@@ -441,7 +451,10 @@ cd frontend
 npm cache clean --force
 
 # node_modules'ı sil
-rm -r node_modules
+# Windows (PowerShell):
+Remove-Item -Recurse -Force node_modules
+# macOS/Linux:
+rm -rf node_modules
 
 # Yeniden yükle
 npm install
@@ -456,8 +469,11 @@ npm install --legacy-peer-deps
 
 **Kontrol Edin:**
 ```bash
-# .env dosyasında bu satırın olduğundan emin ol:
+# Backend .env dosyasında bu satırın olduğundan emin ol:
 # FRONTEND_URL=http://localhost:5173
+
+# Frontend .env dosyasında bu satırın olduğundan emin ol:
+# VITE_API_URL=http://localhost:8000
 
 # Backend main.py'de CORSMiddleware kurulumu kontrol et
 ```
