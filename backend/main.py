@@ -1,4 +1,4 @@
-﻿# backend/main.py
+# backend/main.py
 import asyncio
 import threading
 import uuid
@@ -490,9 +490,10 @@ async def save_violation_async(payload: dict):
             else:
                 print(f"[consumer] ÔÜá´©Å payload has no camera_id, skipping violation save")
                 return
+            # PPE: head, vest. Fall model: sitting, fallen, standing, fall (generic)
+            allowed_types = ('head', 'vest', 'person', 'sitting', 'fallen', 'standing', 'fall')
             for v in payload.get('violations', []):
-                # Validate violation type (eski kodun mant─▒─ş─▒na uygun)
-                if v not in ['head', 'vest']:
+                if v not in allowed_types:
                     print(f"[consumer] Invalid violation type: {v}, skipping...")
                     continue
 

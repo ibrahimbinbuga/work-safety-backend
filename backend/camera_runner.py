@@ -6,6 +6,8 @@ import cv2
 from typing import Optional
 from ultralytics import YOLO
 from state_control import StateController
+from datetime import datetime
+
 
 # Model cache (yüklemeyi tekrar etmemek için global)
 _MODEL_CACHE = {}
@@ -197,6 +199,11 @@ def _build_detection_entry(model_path: str, model_name: str, box, class_names) -
         'yelek': 'vest',
         'head': 'head',
         'kafa': 'head',
+
+        'fallen': 'fallen',
+        'fall': 'fallen',
+        'sitting': 'sitting',
+        'standing': 'standing',
     }
     canonical_class = canonical_map.get(class_key)
 
@@ -485,7 +492,7 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
         frame_count = 0
         detections = []  # last known detections, reused between inference frames
         # Violation check interval: check violations every 4 seconds
-        VIOLATION_CHECK_INTERVAL = 4.0  # seconds
+        VIOLATION_CHECK_INTERVAL = 20.0  # seconds
         last_violation_check_time = time.time()
         # Run inference only every N frames to avoid freezing on CPU.
         # Between inference frames the last known detections are reused so
@@ -580,10 +587,35 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
                         f"Total: {len(detections)}, Models: {len(loaded_models)}"
                     )
 
-                # Process detections through state controller - only check violations every 4 seconds
+                # Process detections - only check violations every 20 seconds
                 current_time = time.time()
                 if current_time - last_violation_check_time >= VIOLATION_CHECK_INTERVAL:
                     last_violation_check_time = current_time
+
+                    # Fall model: send detected postures (sitting, fallen, standing) so DB stores exact type
+                    posture_classes = ('fallen', 'sitting', 'standing')
+                    detected_postures = list(dict.fromkeys(
+                        d.get('canonical_class')
+                        for d in detections
+                        if d.get('canonical_class') in posture_classes
+                    ))
+                    if detected_postures:
+                        payload = {
+                            'camera_id': camera_id,
+                            'camera_source': source,
+                            'worker_id': 0,
+                            'timestamp': datetime.now(),
+                            'violations': detected_postures,
+                            'status': 'posture_detected',
+                            'changes': None,
+                            'snapshot_path': None,
+                        }
+                        try:
+                            loop.call_soon_threadsafe(violation_queue.put_nowait, payload)
+                            print(f"[CameraRunner][Camera {camera_id}] posture violation(s) sent to queue: {detected_postures}")
+                        except Exception as e:
+                            print(f"[CameraRunner][Camera {camera_id}] error sending posture violation: {e}")
+
                     logs = state_controller.process_detections(detections)
                     if logs:
                         for log_entry in logs:
