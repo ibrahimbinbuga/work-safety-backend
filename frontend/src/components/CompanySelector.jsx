@@ -1,7 +1,7 @@
 // frontend/src/components/CompanySelector.jsx
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { getCompanies } from '../utils/api';
+import { getCompanies, selectAdminCompanyContext } from '../utils/api';
 import './CompanySelector.css';
 
 export default function CompanySelector({ onCompanySelect }) {
@@ -41,18 +41,28 @@ export default function CompanySelector({ onCompanySelect }) {
     setSelectedCompanyCode(e.target.value);
   };
 
-  const handleSelectCompany = () => {
-    if (selectedCompanyCode) {
-      setSwitching(true);
-      // Simulate brief loading state for better UX
+  const handleSelectCompany = async () => {
+    if (!selectedCompanyCode) {
+      return;
+    }
+
+    setSwitching(true);
+    setError(null);
+    try {
+      // Ensure backend starts camera/detection pipeline for selected company.
+      await selectAdminCompanyContext(selectedCompanyCode);
+
+      // Keep the brief switching effect for better UX.
       setTimeout(() => {
         setActiveCompanyCode(selectedCompanyCode);
-        // Trigger page reload and reset to dashboard
         if (onCompanySelect) {
           onCompanySelect();
         }
         setSwitching(false);
       }, 500);
+    } catch (err) {
+      setError(err.message || 'Failed to switch company');
+      setSwitching(false);
     }
   };
 

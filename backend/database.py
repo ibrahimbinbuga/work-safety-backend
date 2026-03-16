@@ -23,14 +23,16 @@ DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,  # Log'u kapat
-    pool_size=20,
-    max_overflow=0,
-    pool_pre_ping=True,  # Connection health check
-    pool_recycle=3600,  # Recycle connections every hour
+    pool_size=30,
+    max_overflow=10,
+    pool_timeout=5,       # bağlantı beklemesini 5sn ile sınırla
+    pool_pre_ping=True,   # Connection health check
+    pool_recycle=1800,    # Recycle connections every 30min
     connect_args={
         "ssl": "allow",
-        "timeout": 60,
-        "command_timeout": 60,
+        "timeout": 10,
+        "command_timeout": 10,
+        "statement_cache_size": 0,  # Supabase PgBouncer ile uyumluluk
         "server_settings": {"application_name": "work_safety_backend"}
     }
 )

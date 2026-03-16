@@ -54,6 +54,7 @@ class Camera(Base):
     # İlişki: Bir kameranın birden çok tespiti olabilir
     detections = relationship("Detection", back_populates="camera")
     company = relationship("Company")
+    model_assignments = relationship("CompanyModelCamera", back_populates="camera")
 
 # 2. Tespitler (İhlaller) Tablosu
 class Detection(Base):
@@ -92,7 +93,8 @@ class Violations(Base):
     ihlal_cesidi = Column(String, nullable=False)            # 'head' or 'vest' (eski kodun mantığına uygun)
     ihlal_yapilan_bolge = Column(String)    # kamera konumu veya bölge (optional, can be None)
     violation_id = Column(Integer, nullable=False)  # Worker ID olarak kullanılıyor (eski kodun mantığına uygun - manuel olarak set edilir)
-    
+    review_status = Column(String, default='pending', nullable=False, server_default='pending')  # pending | reviewed | resolved
+
     company = relationship("Company")
 
 
@@ -108,6 +110,7 @@ class ModelMeta(Base):
     
     # İlişki: Bir modelin birden çok şirkete ataması olabilir
     company_assignments = relationship("CompanyModel", back_populates="model")
+    camera_assignments = relationship("CompanyModelCamera", back_populates="model")
 
 
 # 6. Şirket-Model İlişki Tablosu (Many-to-Many)
@@ -122,3 +125,17 @@ class CompanyModel(Base):
     # İlişkiler
     company = relationship("Company", back_populates="models")
     model = relationship("ModelMeta", back_populates="company_assignments")
+
+
+class CompanyModelCamera(Base):
+    __tablename__ = "company_model_cameras"
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False)
+    model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
+    is_active = Column(Boolean, default=False, nullable=False)
+    enabled_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    company = relationship("Company")
+    camera = relationship("Camera", back_populates="model_assignments")
+    model = relationship("ModelMeta", back_populates="camera_assignments")

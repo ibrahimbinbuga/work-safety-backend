@@ -58,7 +58,7 @@ export default function LoginPage({ onLoginSuccess }) {
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h1>🔒 SafetyWatch</h1>
+          <h1>🔒 W.S.A.</h1>
           <p>Workplace Safety Monitoring System</p>
         </div>
 
@@ -116,28 +116,6 @@ export default function LoginPage({ onLoginSuccess }) {
             {loading ? 'Logging in...' : 'Login'}
           </button>
         </form>
-
-        <div className="login-footer">
-          <p className="test-credentials">
-            <strong>📋 Test Credentials:</strong>
-            <br />
-            <br />
-            <em>🔑 Admin (All Companies):</em>
-            <br />
-            Code: <code>ADMIN</code> | Email: <code>admin@system.com</code> | Pass: <code>admin123</code>
-            <br />
-            <br />
-            <em>👤 User Examples:</em>
-            <br />
-            Company 1: <code>COMPANY001</code> | <code>user1@abc.com</code> | <code>password123</code>
-            <br />
-            Company 2: <code>COMPANY002</code> | <code>user2@xyz.com</code> | <code>password123</code>
-            <br />
-            Company 3: <code>COMPANY003</code> | <code>user3@def.com</code> | <code>password123</code>
-            <br />
-            Company 4: <code>COMPANY004</code> | <code>user4@ghi.com</code> | <code>password123</code>
-          </p>
-        </div>
       </div>
     </div>
   );

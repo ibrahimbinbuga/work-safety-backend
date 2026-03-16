@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { apiClient, addCompanyCodeToUrl } from '../utils/api';
-import { Building2 } from 'lucide-react';
+import { Building2, BrainCircuit } from 'lucide-react';
 
 export const Companies = () => {
   const [companies, setCompanies] = useState([]);
@@ -71,18 +71,44 @@ export const Companies = () => {
 
                 <div className="mt-4 border-t border-gray-100 pt-3">
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Cameras</p>
-                  <ul className="mt-2 space-y-1">
+                  <ul className="mt-2 space-y-2">
                     {(companyCameras[company.code] || []).length === 0 ? (
                       <li className="text-sm text-gray-400">No cameras</li>
                     ) : (
                       companyCameras[company.code].map((camera) => (
-                        <li key={camera.id} className="text-sm text-gray-700">
-                          • {camera.name}
+                        <li key={camera.id}>
+                          <span className="text-sm text-gray-700">• {camera.name}</span>
                         </li>
                       ))
                     )}
                   </ul>
                 </div>
+
+                {/* Models section */}
+                {(() => {
+                  const allModels = [];
+                  (companyCameras[company.code] || []).forEach(cam => {
+                    (cam.active_models || []).forEach(m => {
+                      if (!allModels.find(x => x.id === m.id)) allModels.push(m);
+                    });
+                  });
+                  return (
+                    <div className="mt-4 border-t border-gray-100 pt-3">
+                    <div className="mt-2 flex flex-col gap-1">
+                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Models</p>
+                        {allModels.length === 0 ? (
+                          <span className="text-sm text-gray-400">No models assigned</span>
+                        ) : (
+                          allModels.map(m => (
+                            <span key={m.id} className="text-sm text-gray-700">
+                              • {m.version || m.name}{m.description && ` — ${m.description}`}
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>

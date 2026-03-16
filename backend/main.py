@@ -6,13 +6,13 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
-from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status
+from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from fastapi.security import HTTPBearer
 from fastapi.security.http import HTTPAuthorizationCredentials
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, delete, text
 from database import engine, Base, AsyncSessionLocal, get_db
 import models
 from camera_runner import run_camera_thread, get_latest_frame, preload_model_async
@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from typing import Optional
 import base64
 from datetime import datetime
+from pydantic import BaseModel
 from auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
     LoginRequest, Token, UserCreate, UserResponse, TokenData, is_admin, CompanyResponse
@@ -33,7 +34,7 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS (dev için geniş izin)
+# CORS (dev i├ğin geni┼ş izin)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -44,6 +45,7 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 # Global structures to manage camera threads and queue
 camera_threads = {}  # camera_id -> {'thread': Thread, 'stop_event': Event}
@@ -148,60 +150,294 @@ def set_active_model_path(path: str):
     else:
         ACTIVE_MODEL_PATH = path
         print(f"[model] ✅ Aktif model yolu güncellendi: {ACTIVE_MODEL_PATH}")
-        
-        # 📌 Yeni modeli arka planda ön-yükle (kamera thread'lerini bloke etmez)
+
         if Path(path).exists():
             print(f"[model] 🚀 Model arka planda ön-yükleniyor: {path}")
             preload_model_async(path)
         else:
             print(f"[model] ⚠️ Model dosyası bulunamadı: {path}")
 
+
 def get_active_model_path() -> str:
-    """
-    Aktif model yolunu döndürür.
-    """
+    """Aktif model yolunu döndürür."""
     return ACTIVE_MODEL_PATH
 
 
+async def get_active_model_paths_for_camera(db: AsyncSession, company_id: int, camera_id: int) -> list[str]:
+    """Resolve only explicitly active model paths for a company/camera pair."""
+    active_models = await get_camera_active_models(db, company_id, camera_id)
+    paths = [model.get("path") for model in active_models if model.get("path")]
+    return paths
 
-def start_camera_thread(camera_id: int, rtsp_url: str, model_path: Optional[str] = None, use_default_model: bool = True):
+
+def is_local_camera_source(source: Optional[str]) -> bool:
+    """Return True for local webcam-style numeric sources like '0' or 0."""
+    if source is None:
+        return False
+    if isinstance(source, int):
+        return True
+    return str(source).strip().isdigit()
+
+
+def normalize_camera_source(source: Optional[str]) -> str:
+    """Normalize camera source values so local source conflicts are detected consistently."""
+    if source is None:
+        return ""
+    return str(source).strip()
+
+
+def find_running_camera_with_source(source: Optional[str], exclude_camera_id: Optional[int] = None) -> Optional[int]:
+    """Find another running camera thread using the same source."""
+    normalized_source = normalize_camera_source(source)
+    if not normalized_source:
+        return None
+
+    for existing_camera_id, info in camera_threads.items():
+        if exclude_camera_id is not None and existing_camera_id == exclude_camera_id:
+            continue
+
+        thread = info.get('thread')
+        if not thread or not thread.is_alive():
+            continue
+
+        if info.get('source') == normalized_source:
+            return existing_camera_id
+
+    return None
+
+
+def stop_camera_thread(camera_id: int):
+    """Stop a running camera thread if present."""
+    info = camera_threads.get(camera_id)
+    if not info:
+        return
+
+    info['stop_event'].set()
+    info['thread'].join(timeout=2.0)
+    camera_threads.pop(camera_id, None)
+
+
+async def stop_company_cameras(db: AsyncSession, company_id: int, trigger: str = "manual") -> int:
+    """Stop running camera threads for a company."""
+    result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company_id)
+    )
+    cameras = result.scalars().all()
+
+    stopped_count = 0
+    for cam in cameras:
+        if cam.id in camera_threads:
+            stop_camera_thread(cam.id)
+            stopped_count += 1
+
+    print(
+        f"[camera-stop] trigger={trigger} company_id={company_id} "
+        f"total={len(cameras)} stopped={stopped_count}"
+    )
+    return stopped_count
+
+
+async def restart_camera_with_current_models(db: AsyncSession, camera: models.Camera, force_local: bool = False):
+    """Restart camera thread with current active model mapping."""
+    stop_camera_thread(camera.id)
+    model_paths = await get_active_model_paths_for_camera(db, camera.company_id, camera.id)
+    source = "0" if force_local else camera.rtsp_url
+    start_camera_thread(camera.id, source, model_paths=model_paths, use_default_model=not model_paths)
+
+
+async def restart_company_cameras(db: AsyncSession, company_id: int):
+    """Restart all company cameras so assignment changes apply immediately."""
+    cameras_result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company_id)
+    )
+    for camera in cameras_result.scalars().all():
+        await restart_camera_with_current_models(db, camera)
+
+
+async def sync_company_model_activation_summary(db: AsyncSession, company_id: int):
+    """Sync legacy CompanyModel.is_active from camera-level active mappings."""
+    active_model_ids_result = await db.execute(
+        select(models.CompanyModelCamera.model_id)
+        .where(
+            (models.CompanyModelCamera.company_id == company_id) &
+            (models.CompanyModelCamera.is_active == True)
+        )
+        .distinct()
+    )
+    active_model_ids = set(active_model_ids_result.scalars().all())
+
+    company_models_result = await db.execute(
+        select(models.CompanyModel).where(models.CompanyModel.company_id == company_id)
+    )
+    for company_model in company_models_result.scalars().all():
+        company_model.is_active = company_model.model_id in active_model_ids
+
+
+async def ensure_company_model_cameras_schema():
+    """Patch legacy DBs where company_model_cameras exists without new columns."""
+    async with engine.begin() as conn:
+        await conn.execute(text("ALTER TABLE IF EXISTS company_model_cameras ADD COLUMN IF NOT EXISTS model_id INTEGER"))
+        await conn.execute(text("ALTER TABLE IF EXISTS company_model_cameras ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT FALSE"))
+        await conn.execute(text("ALTER TABLE IF EXISTS company_model_cameras ADD COLUMN IF NOT EXISTS enabled_at TIMESTAMPTZ DEFAULT NOW()"))
+
+        # Ensure expected foreign keys exist (safe no-op when already present).
+        await conn.execute(text(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'company_model_cameras_model_id_fkey'
+                ) THEN
+                    ALTER TABLE company_model_cameras
+                    ADD CONSTRAINT company_model_cameras_model_id_fkey
+                    FOREIGN KEY (model_id) REFERENCES models(id);
+                END IF;
+            END$$;
+            """
+        ))
+
+        # Legacy schema may have unique(camera_id) or unique(company_id, camera_id).
+        # Drop those so one camera can hold multiple model rows.
+        await conn.execute(text(
+            """
+            DO $$
+            DECLARE
+                c RECORD;
+            BEGIN
+                FOR c IN
+                    SELECT conname
+                    FROM pg_constraint
+                    WHERE conrelid = 'company_model_cameras'::regclass
+                      AND contype = 'u'
+                      AND (
+                          pg_get_constraintdef(oid) ILIKE 'UNIQUE (camera_id)%'
+                          OR pg_get_constraintdef(oid) ILIKE 'UNIQUE (company_id, camera_id)%'
+                          OR pg_get_constraintdef(oid) ILIKE 'UNIQUE (camera_id, company_id)%'
+                      )
+                LOOP
+                    EXECUTE format('ALTER TABLE company_model_cameras DROP CONSTRAINT IF EXISTS %I', c.conname);
+                END LOOP;
+            END$$;
+            """
+        ))
+
+        # Keep data clean: one row per (company, camera, model).
+        await conn.execute(text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_company_model_cameras_company_camera_model
+            ON company_model_cameras (company_id, camera_id, model_id)
+            """
+        ))
+
+        # Legacy rows may miss model_id; assign a deterministic company model as fallback.
+        await conn.execute(text(
+            """
+            UPDATE company_model_cameras cmc
+            SET model_id = sub.model_id
+            FROM (
+                SELECT company_id, MIN(model_id) AS model_id
+                FROM company_models
+                GROUP BY company_id
+            ) AS sub
+            WHERE cmc.model_id IS NULL
+              AND cmc.company_id = sub.company_id
+            """
+        ))
+
+        await conn.execute(text("UPDATE company_model_cameras SET is_active = FALSE WHERE is_active IS NULL"))
+
+
+def start_camera_thread(
+    camera_id: int,
+    rtsp_url: str,
+    model_path: Optional[str] = None,
+    use_default_model: bool = True,
+    model_paths: Optional[list[str]] = None,
+):
     """Start a blocking camera loop in a separate thread."""
-    # 📌 Model yolunu al (arka planda yükleniyor olabilir)
-    if model_path is None and use_default_model:
-        model_path = get_active_model_path()
-    
-    # Eğer model yoksa, kullanıcı bilgilendir ama kamera yine de başlat
-    # (raw camera feed gösterecek, detection olmadan)
-    if not model_path:
+    resolved_model_paths = [path for path in (model_paths or []) if path]
+
+    if not resolved_model_paths and model_path:
+        resolved_model_paths = [model_path]
+
+    # Intentionally do not fallback to global default model here.
+    # If no model is explicitly assigned, run camera as raw feed.
+
+    if not resolved_model_paths:
         print(f"[start_camera_thread] ⚠️ Model yoksa bile kamera başlatılıyor (raw feed): camera_id={camera_id}")
-        # Model yoksa bile devam et - kamera en az raw feed'i gösterecek
     else:
-        if not Path(model_path).exists():
-            print(f"[start_camera_thread] ⚠️ Model dosyası bulunamadı: {model_path}")
-            print(f"[start_camera_thread] Kamera raw feed ile başlatılıyor (detection olmadan)")
-    
-    if camera_id in camera_threads:  # It is used to check if the camera thread is already running
+        for path in resolved_model_paths:
+            if not Path(path).exists():
+                print(f"[start_camera_thread] ⚠️ Model dosyası bulunamadı: {path}")
+                print(f"[start_camera_thread] Kamera raw feed veya kalan modeller ile başlatılıyor")
+
+    if camera_id in camera_threads:
         print(f"[start_camera_thread] Camera {camera_id} already running")
         return
-    
-    if main_loop is None:  # It is used to check if the main loop is already running
+
+    if main_loop is None:
         print(f"[start_camera_thread] ERROR: main_loop is None, cannot start camera {camera_id}")
         return
-    
-    if violation_queue is None:  # It is used to check if the violation queue is already running
+
+    if violation_queue is None:
         print(f"[start_camera_thread] ERROR: violation_queue is None, cannot start camera {camera_id}")
         return
-    
-    print(f"[start_camera_thread] Creating thread for camera {camera_id} with rtsp_url='{rtsp_url}' and model_path='{model_path}'")
+
+    normalized_source = normalize_camera_source(rtsp_url)
+    if is_local_camera_source(normalized_source):
+        conflicting_camera_id = find_running_camera_with_source(normalized_source, exclude_camera_id=camera_id)
+        if conflicting_camera_id is not None:
+            print(
+                f"[start_camera_thread] Skipping camera {camera_id}: local source '{normalized_source}' "
+                f"is already in use by camera {conflicting_camera_id}"
+            )
+            return
+
+    print(
+        f"[start_camera_thread] Creating thread for camera {camera_id} with rtsp_url='{rtsp_url}' "
+        f"and model_paths='{resolved_model_paths}'"
+    )
     stop_event = threading.Event()
     thread = threading.Thread(
         target=run_camera_thread,
-        args=(camera_id, rtsp_url, model_path, main_loop, violation_queue, stop_event),
+        args=(camera_id, rtsp_url, resolved_model_paths, main_loop, violation_queue, stop_event),
         daemon=True
     )
-    camera_threads[camera_id] = {'thread': thread, 'stop_event': stop_event}
+    camera_threads[camera_id] = {
+        'thread': thread,
+        'stop_event': stop_event,
+        'source': normalized_source,
+    }
     thread.start()
     print(f"[start_camera_thread] Started camera thread for {camera_id}")
+
+
+async def ensure_company_cameras_started(db: AsyncSession, company_id: int, trigger: str = "manual") -> int:
+    """Start camera threads for a company only if they are not already running."""
+    result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company_id)
+    )
+    cameras = result.scalars().all()
+
+    started_count = 0
+    for cam in cameras:
+        existing = camera_threads.get(cam.id)
+        if existing:
+            if existing['thread'].is_alive():
+                continue
+            # Clean stale thread entries before restarting.
+            camera_threads.pop(cam.id, None)
+
+        model_paths = await get_active_model_paths_for_camera(db, cam.company_id, cam.id)
+        start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
+        started_count += 1
+
+    print(
+        f"[camera-start] trigger={trigger} company_id={company_id} "
+        f"total={len(cameras)} started={started_count}"
+    )
+    return started_count
 
 async def violation_consumer_task(queue: asyncio.Queue):
     """
@@ -220,7 +456,7 @@ async def violation_consumer_task(queue: asyncio.Queue):
 async def save_violation_async(payload: dict):
     """
     Save the payload as Detection (and Violation) to DB using AsyncSession.
-    Eski db_config.py'deki save_violation fonksiyonunun mantığına uygun olarak yazıldı.
+    Eski db_config.py'deki save_violation fonksiyonunun mant─▒─ş─▒na uygun olarak yaz─▒ld─▒.
     Detection.company_id is set from the camera's company_id.
     
     Args:
@@ -236,11 +472,11 @@ async def save_violation_async(payload: dict):
             if camera_id is not None:
                 cam = await session.get(models.Camera, camera_id)
                 if cam is None or cam.company_id is None:
-                    print(f"[consumer] ⚠️ Camera {camera_id} has no company_id, skipping violation save")
+                    print(f"[consumer] ÔÜá´©Å Camera {camera_id} has no company_id, skipping violation save")
                     return
                 company_id = cam.company_id
             else:
-                print(f"[consumer] ⚠️ payload has no camera_id, skipping violation save")
+                print(f"[consumer] ÔÜá´©Å payload has no camera_id, skipping violation save")
                 return
 
             # Create Detection rows for each violation type (head/vest etc.)
@@ -248,15 +484,16 @@ async def save_violation_async(payload: dict):
             if camera_id is not None:
                 cam = await session.get(models.Camera, camera_id)
                 if cam is None or cam.company_id is None:
-                    print(f"[consumer] ⚠️ Camera {camera_id} has no company_id, skipping violation save")
+                    print(f"[consumer] ÔÜá´©Å Camera {camera_id} has no company_id, skipping violation save")
                     return
                 company_id = cam.company_id
             else:
-                print(f"[consumer] ⚠️ payload has no camera_id, skipping violation save")
+                print(f"[consumer] ÔÜá´©Å payload has no camera_id, skipping violation save")
                 return
+            # PPE: head, vest. Fall model: sitting, fallen, standing, fall (generic)
+            allowed_types = ('head', 'vest', 'person', 'sitting', 'fallen', 'standing', 'fall')
             for v in payload.get('violations', []):
-                # Validate violation type (eski kodun mantığına uygun)
-                if v not in ['head', 'vest']:
+                if v not in allowed_types:
                     print(f"[consumer] Invalid violation type: {v}, skipping...")
                     continue
 
@@ -271,12 +508,12 @@ async def save_violation_async(payload: dict):
                 )
                 session.add(det)
 
-                # Create Violation record (eski db_config.py save_violation fonksiyonunun mantığına uygun)
-                # violation_id: worker_id kullanılıyor (eski kodda parametre olarak alınıyordu: violation_id: int)
+                # Create Violation record (eski db_config.py save_violation fonksiyonunun mant─▒─ş─▒na uygun)
+                # violation_id: worker_id kullan─▒l─▒yor (eski kodda parametre olarak al─▒n─▒yordu: violation_id: int)
                 # tarih_saat: otomatik olarak server_default=func.now() ile kaydedilecek (CURRENT_TIMESTAMP gibi)
                 worker_id = payload.get('worker_id')
                 if worker_id is None:
-                    print(f"[consumer] ⚠️ Warning: worker_id is None for violation {v}, using 0 as default")
+                    print(f"[consumer] ÔÜá´©Å Warning: worker_id is None for violation {v}, using 0 as default")
                     worker_id = 0
                 
                 violation_area = str(payload.get('camera_id')) if payload.get('camera_id') is not None else None  # ihlal_yapilan_bolge (optional, can be None)
@@ -290,10 +527,10 @@ async def save_violation_async(payload: dict):
                 session.add(vio)
 
             await session.commit()
-            print(f"[consumer] ✅ Saved violation(s) for camera {payload.get('camera_id')} - {payload.get('violations')}, worker_id={payload.get('worker_id')}")
+            print(f"[consumer] Ô£à Saved violation(s) for camera {payload.get('camera_id')} - {payload.get('violations')}, worker_id={payload.get('worker_id')}")
         except Exception as e:
             await session.rollback()
-            print(f"[consumer] ❌ Error saving violation: {e}")
+            print(f"[consumer] ÔØî Error saving violation: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -395,6 +632,14 @@ async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db))
         role=user.role,
         company_code=login_request.company_code
     )
+
+    # Start company cameras only for regular user logins.
+    if user.role == "user" and user.company_id is not None:
+        await ensure_company_cameras_started(
+            db,
+            user.company_id,
+            trigger=f"user-login:{user.id}",
+        )
     
     return Token(
         access_token=access_token,
@@ -418,11 +663,68 @@ async def get_current_user_info(current_user: TokenData = Depends(get_current_us
 
 
 @app.post("/api/auth/logout")
-async def logout(current_user: TokenData = Depends(get_current_user)):
+async def logout(
+    payload: Optional[dict] = Body(default=None),
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Logout endpoint (token invalidation should be handled on client side).
     """
-    return {"status": "success", "message": "Logged out successfully"}
+    target_company_code: Optional[str] = None
+
+    # Regular users always stop their own company cameras on logout.
+    if current_user.role == "user":
+        target_company_code = current_user.company_code
+    elif current_user.role == "admin":
+        requested_code = (payload or {}).get("company_code")
+        if requested_code and not is_admin_company_code(requested_code):
+            target_company_code = requested_code
+
+    stopped_count = 0
+    if target_company_code:
+        company_result = await db.execute(
+            select(models.Company).where(func.upper(models.Company.code) == func.upper(target_company_code))
+        )
+        company = company_result.scalar_one_or_none()
+        if company:
+            stopped_count = await stop_company_cameras(
+                db,
+                company.id,
+                trigger=f"logout:{current_user.user_id}",
+            )
+
+    return {
+        "status": "success",
+        "message": "Logged out successfully",
+        "stopped_cameras": stopped_count,
+    }
+
+
+@app.post("/api/auth/select-company/{company_code}")
+async def select_company_for_admin(
+    company_code: str,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin şirket seçtiğinde ilgili şirketin kamera thread'lerini başlatır."""
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    started_count = await ensure_company_cameras_started(
+        db,
+        company.id,
+        trigger=f"admin-select:{admin_user.user_id}",
+    )
+    return {
+        "status": "success",
+        "company_code": company.code,
+        "started_cameras": started_count,
+    }
 
 
 @app.get("/api/companies", response_model=list[CompanyResponse])
@@ -573,6 +875,158 @@ async def delete_user(
 
 # ===== Protected Camera Endpoints =====
 
+async def get_camera_active_models(db: AsyncSession, company_id: int, camera_id: int) -> list[dict]:
+    """
+    Return active model metadata for the given company/camera.
+    Camera-level mappings are authoritative; company-level activation is mirrored for compatibility.
+    """
+    result = await db.execute(
+        select(models.ModelMeta)
+        .join(models.CompanyModelCamera, models.CompanyModelCamera.model_id == models.ModelMeta.id)
+        .where(
+            (models.CompanyModelCamera.company_id == company_id) &
+            (models.CompanyModelCamera.camera_id == camera_id) &
+            (models.CompanyModelCamera.is_active == True)
+        )
+        .order_by(models.ModelMeta.uploaded_at.desc())
+    )
+    model_rows = result.scalars().all()
+
+    return [
+        {
+            "id": m.id,
+            "name": m.version,
+            "version": m.version,
+            "path": m.path,
+            "description": m.description,
+        }
+        for m in model_rows
+    ]
+
+
+def camera_to_dict(cam: models.Camera, active_models: Optional[list[dict]] = None, model_is_active: Optional[bool] = None) -> dict:
+    """Serialize camera row with model assignment info for frontend usage."""
+    active_models = active_models or []
+    if model_is_active is None:
+        model_is_active = len(active_models) > 0
+
+    thread_info = camera_threads.get(cam.id)
+    has_running_thread = bool(thread_info and thread_info['thread'].is_alive())
+    has_recent_frame = get_latest_frame(cam.id) is not None
+    runtime_status = "online" if (has_running_thread and has_recent_frame) else "offline"
+
+    return {
+        "id": cam.id,
+        "name": cam.name,
+        "location": cam.location,
+        "rtsp_url": cam.rtsp_url,
+        "status": runtime_status,
+        "company_id": cam.company_id,
+        "last_active": cam.last_active.isoformat() if cam.last_active else None,
+        "model_is_active": model_is_active,
+        "active_models": active_models,
+    }
+
+
+async def get_active_model_path_for_camera(db: AsyncSession, company_id: int, camera_id: int) -> Optional[str]:
+    """
+    Resolve model path for a camera.
+    Returns first explicitly active assigned model path for the camera.
+    """
+    active_model_paths = await get_active_model_paths_for_camera(db, company_id, camera_id)
+    if active_model_paths:
+        model_path = active_model_paths[0]
+        if model_path:
+            return model_path
+    return None
+
+
+class CameraCreateRequest(BaseModel):
+    name: str
+    location: Optional[str] = None
+    rtsp_url: str = "0"
+    company_code: Optional[str] = None
+
+
+@app.post("/api/cameras")
+async def create_camera(
+    camera_create: CameraCreateRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a camera under a company. Regular users can only create for their own company."""
+    target_company_code = camera_create.company_code
+
+    if current_user.role != "admin":
+        # Regular users are restricted to their own company.
+        if target_company_code and target_company_code.upper() != current_user.company_code.upper():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to create camera for this company"
+            )
+        target_company_code = current_user.company_code
+    else:
+        # Admin must provide a real company code when creating a company-scoped camera.
+        if not target_company_code or is_admin_company_code(target_company_code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Admin must provide a valid non-admin company_code"
+            )
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(target_company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    camera_name = (camera_create.name or "").strip()
+    if not camera_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Camera name is required")
+
+    source = (camera_create.rtsp_url or "").strip()
+    if not source:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="rtsp_url is required")
+
+    if is_local_camera_source(source):
+        existing_local_camera_result = await db.execute(
+            select(models.Camera).where(models.Camera.rtsp_url == source)
+        )
+        existing_local_camera = existing_local_camera_result.scalar_one_or_none()
+        if existing_local_camera:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Local camera source '{source}' is already assigned to camera "
+                    f"'{existing_local_camera.name}' (id={existing_local_camera.id}). "
+                    "Use a different RTSP source or delete the existing local camera first."
+                )
+            )
+
+    new_camera = models.Camera(
+        name=camera_name,
+        location=(camera_create.location or "").strip() or "-",
+        rtsp_url=source,
+        status="online",
+        company_id=company.id,
+    )
+
+    db.add(new_camera)
+    await db.commit()
+    await db.refresh(new_camera)
+
+    # Start the newly added camera immediately for the active company session.
+    model_paths = await get_active_model_paths_for_camera(db, company.id, new_camera.id)
+    start_camera_thread(
+        new_camera.id,
+        new_camera.rtsp_url,
+        model_paths=model_paths,
+        use_default_model=not model_paths,
+    )
+
+    active_models = await get_camera_active_models(db, company.id, new_camera.id)
+    return camera_to_dict(new_camera, active_models=active_models)
+
 @app.get("/api/cameras")
 async def get_cameras(
     current_user: TokenData = Depends(get_current_user),
@@ -616,6 +1070,56 @@ async def get_cameras(
         response.append(camera_to_dict(cam, active_models=active_models))
 
     return response
+
+
+@app.delete("/api/cameras/{camera_id}")
+async def delete_camera(
+    camera_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a camera and stop its thread if running."""
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Camera not found"
+        )
+
+    if current_user.role != "admin":
+        company_result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == func.upper(current_user.company_code)
+            )
+        )
+        company = company_result.scalar_one_or_none()
+        if not company or cam.company_id != company.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera"
+            )
+
+    # Remove related rows first to satisfy FK constraints.
+    await db.execute(
+        delete(models.CompanyModelCamera).where(models.CompanyModelCamera.camera_id == camera_id)
+    )
+    await db.execute(
+        delete(models.Detection).where(models.Detection.camera_id == camera_id)
+    )
+    
+    # Delete the camera itself
+    await db.execute(
+        delete(models.Camera).where(models.Camera.id == camera_id)
+    )
+    await db.commit()
+    
+    # Only stop thread after successful DB commit
+    if camera_id in camera_threads:
+        stop_camera_thread(camera_id)
+
+    await ensure_company_cameras_started(db, cam.company_id, trigger=f"delete:{camera_id}")
+    
+    return {"status": "success", "camera_id": camera_id, "message": "Camera deleted"}
 
 
 @app.get("/api/detections")
@@ -692,7 +1196,56 @@ async def get_violations(
         )
     
     violations = result.scalars().all()
-    return violations
+    return [
+        {
+            "id": v.id,
+            "violation_id": v.violation_id,
+            "ihlal_cesidi": v.ihlal_cesidi,
+            "ihlal_yapilan_bolge": v.ihlal_yapilan_bolge,
+            "tarih_saat": v.tarih_saat,
+            "review_status": v.review_status if v.review_status else "pending",
+        }
+        for v in violations
+    ]
+
+@app.patch("/api/violations/{violation_id}/status")
+async def update_violation_status(
+    violation_id: int,
+    body: dict,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update the review status of a violation (pending | reviewed | resolved)."""
+    review_status = body.get("review_status", "")
+    allowed = {'pending', 'reviewed', 'resolved'}
+    if review_status not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {allowed}")
+
+    if current_user.role == "admin":
+        result = await db.execute(
+            update(models.Violations)
+            .where(models.Violations.id == violation_id)
+            .values(review_status=review_status)
+        )
+    else:
+        # Single query: update only if the violation belongs to the user's company
+        result = await db.execute(
+            update(models.Violations)
+            .where(
+                models.Violations.id == violation_id,
+                models.Violations.company_id == select(models.Company.id).where(
+                    func.upper(models.Company.code) == func.upper(current_user.company_code)
+                ).scalar_subquery()
+            )
+            .values(review_status=review_status)
+        )
+
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Violation not found or access denied")
+
+    await db.commit()
+    return {"id": violation_id, "review_status": review_status}
+
 
 @app.post("/api/camera/{camera_id}/start-local")
 async def api_start_local_camera(
@@ -723,8 +1276,8 @@ async def api_start_local_camera(
         
         # Use "0" for local camera
         print(f"[api_start_local_camera] Starting local camera for camera_id={camera_id}")
-        model_path = await get_active_model_path_for_camera(session, cam.company_id, cam.id)
-        start_camera_thread(cam.id, "0", model_path=model_path, use_default_model=False)
+        model_paths = await get_active_model_paths_for_camera(session, cam.company_id, cam.id)
+        start_camera_thread(cam.id, "0", model_paths=model_paths, use_default_model=not model_paths)
     return {"status": "started with local camera", "camera_id": camera_id}
 
 
@@ -757,12 +1310,9 @@ async def api_stop_camera(
                 detail="You don't have access to this camera"
             )
     
-    info = camera_threads.get(camera_id)
-    if not info:
+    if camera_id not in camera_threads:
         return {"status": "not running"}
-    info['stop_event'].set()
-    info['thread'].join(timeout=2.0)
-    del camera_threads[camera_id]
+    stop_camera_thread(camera_id)
     return {"status": "stopped", "camera_id": camera_id}
 
 @app.get("/api/camera/{camera_id}/frame-status")
@@ -808,10 +1358,44 @@ async def debug_camera_status(admin_user: TokenData = Depends(get_admin_user)):
     return status
 
 @app.get("/api/camera/{camera_id}/stream")
-async def stream_camera(camera_id: int, current_user: TokenData = Depends(get_current_user)):
+async def stream_camera(
+    camera_id: int,
+    token: Optional[str] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security),
+    db: AsyncSession = Depends(get_db),
+):
     """
     MJPEG stream endpoint for live camera feed with detections.
     """
+    raw_token = token or (credentials.credentials if credentials else None)
+    if not raw_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication token")
+
+    token_data = decode_access_token(raw_token)
+    if token_data is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+
+    user = await db.get(models.User, token_data.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    cam = await db.get(models.Camera, camera_id)
+    if not cam:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Camera not found")
+
+    if token_data.role != "admin":
+        company_result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == func.upper(token_data.company_code)
+            )
+        )
+        company = company_result.scalar_one_or_none()
+        if not company or cam.company_id != company.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera",
+            )
+
     # Create a placeholder black frame
     placeholder_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.putText(placeholder_frame, "No frame available", (150, 240), 
@@ -842,7 +1426,7 @@ async def stream_camera(camera_id: int, current_user: TokenData = Depends(get_cu
     )
 
 def modelmeta_to_dict(model):
-    """ModelMeta nesnesini dict'e çevirir (JSON serializable)."""
+    """ModelMeta nesnesini dict'e ├ğevirir (JSON serializable)."""
     return {
         "id": model.id,
         "path": model.path,
@@ -863,17 +1447,22 @@ async def upload_model(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Yeni bir model dosyasını yükler ve kaydeder. (Admin only)
+    Yeni bir model dosyas─▒n─▒ y├╝kler ve kaydeder. (Admin only)
     """
     allowed_ext = ('.pt', '.weights', '.onnx')
     if not any(file.filename.endswith(ext) for ext in allowed_ext):
-        raise HTTPException(status_code=400, detail="Desteklenmeyen dosya uzantısı.")
+        raise HTTPException(status_code=400, detail="Desteklenmeyen dosya uzant─▒s─▒.")
 
     try:
         models_dir = Path(__file__).parent.parent / "model" / "weights"
         models_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{version}_{uuid.uuid4().hex}_{file.filename}"
         file_path = models_dir / filename
+
+        # Store the path as project-root-relative with forward slashes so it
+        # works on every team member's machine regardless of OS or clone location.
+        project_root = Path(__file__).parent.parent
+        relative_path = file_path.relative_to(project_root).as_posix()  # e.g. "model/weights/v1_best.pt"
 
         # Dosya boyutu kontrolü (örnek: 200MB sınır)
         MAX_SIZE = 200 * 1024 * 1024
@@ -883,28 +1472,28 @@ async def upload_model(
 
         with open(file_path, "wb") as f:
             f.write(content)
-        print(f"[model] Model dosyası yüklendi: {file_path}")
+        print(f"[model] Model dosyası yüklendi: {file_path} (stored as: {relative_path})")
 
         # DB'ye model meta verisini kaydet
         async with AsyncSessionLocal() as session:
             # Aynı path varsa ekleme!
-            existing = await session.execute(select(models.ModelMeta).where(models.ModelMeta.path == str(file_path)))
+            existing = await session.execute(select(models.ModelMeta).where(models.ModelMeta.path == relative_path))
             if existing.scalars().first():
                 raise HTTPException(status_code=409, detail="Bu path ile model zaten var.")
             model_meta = models.ModelMeta(
-                path=str(file_path),
+                path=relative_path,
                 version=version,
                 description=description,
                 is_active=False
             )
             session.add(model_meta)
             await session.commit()
-        return {"status": "success", "path": str(file_path), "version": version, "description": description}
+        return {"status": "success", "path": relative_path, "version": version, "description": description}
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"[model] Model yükleme hatası: {e}")
-        raise HTTPException(status_code=500, detail=f"Model yükleme hatası: {str(e)}")
+        print(f"[model] Model y├╝kleme hatas─▒: {e}")
+        raise HTTPException(status_code=500, detail=f"Model y├╝kleme hatas─▒: {str(e)}")
 
 @app.post("/api/model/activate")
 async def activate_model(
@@ -913,39 +1502,31 @@ async def activate_model(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Yüklenen bir modeli aktif hale getirir veya devre dışı bırakır.
+    Y├╝klenen bir modeli aktif hale getirir veya devre d─▒┼ş─▒ b─▒rak─▒r.
     """
-    # Eğer path boşsa, aktif modeli devre dışı bırak
+    # E─şer path bo┼şsa, aktif modeli devre d─▒┼ş─▒ b─▒rak
     if not path:
         set_active_model_path("")
-        # Tüm kamera thread'lerini durdur
-        for cam_id, info in list(camera_threads.items()):
-            print(f"[model] Kamerayı devre dışı bırak: {cam_id}")
-            info['stop_event'].set()
-            info['thread'].join(timeout=2.0)
-            del camera_threads[cam_id]
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(models.Camera))
+            for cam in result.scalars().all():
+                print(f"[model] Varsayilan model kapatildi, kamera yeniden baslatiliyor: {cam.id}")
+                await restart_camera_with_current_models(session, cam)
         return {"status": "active", "model_path": None}
 
     if not Path(path).exists():
-        raise HTTPException(status_code=404, detail="Model dosyası bulunamadı.")
+        raise HTTPException(status_code=404, detail="Model dosyas─▒ bulunamad─▒.")
     set_active_model_path(path)
-    # Tüm çalışan kamera thread'lerini yeni model ile yeniden başlat
-    for cam_id, info in list(camera_threads.items()):
-        print(f"[model] Kamerayı yeni model ile yeniden başlat: {cam_id}")
-        info['stop_event'].set()
-        info['thread'].join(timeout=2.0)
-        del camera_threads[cam_id]
-        # Kamerayı yeni model ile başlat
-        # Kamera bilgisi DB'den alınır
-        async with AsyncSessionLocal() as session:
-            cam = await session.get(models.Camera, cam_id)
-            if cam and cam.status == "online":
-                start_camera_thread(cam.id, cam.rtsp_url)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(models.Camera))
+        for cam in result.scalars().all():
+            print(f"[model] Varsayilan model guncellendi, kamera yeniden baslatiliyor: {cam.id}")
+            await restart_camera_with_current_models(session, cam)
     
     async with AsyncSessionLocal() as session:
-        # Tüm modelleri pasif yap
+        # T├╝m modelleri pasif yap
         await session.execute(update(models.ModelMeta).values(is_active=False))
-        # Eğer path boş değilse, ilgili modeli aktif yap
+        # E─şer path bo┼ş de─şilse, ilgili modeli aktif yap
         if path:
             await session.execute(update(models.ModelMeta).where(models.ModelMeta.path == path).values(is_active=True))
         await session.commit()
@@ -954,7 +1535,7 @@ async def activate_model(
 @app.get("/api/model/active")
 async def get_active_model(current_user: TokenData = Depends(get_current_user)):
     """
-    Aktif model yolunu döndürür.
+    Aktif model yolunu d├Ând├╝r├╝r.
     """
     return {"active_model_path": get_active_model_path()}
 
@@ -968,7 +1549,247 @@ async def get_models(current_user: TokenData = Depends(get_current_user)):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Model listesi al─▒namad─▒: {str(e)}")
+
+
+def general_model_to_dict(model: models.ModelMeta) -> dict:
+    """Frontend'in general model format─▒ i├ğin ModelMeta'y─▒ normalize eder."""
+    return {
+        "id": model.id,
+        "name": model.version,
+        "version": model.version,
+        "description": model.description,
+        "path": model.path,
+        "uploaded_at": model.uploaded_at.isoformat() if model.uploaded_at else "",
+        "is_active": model.is_active,
+    }
+
+
+@app.get("/api/general-models")
+async def get_general_models(
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """T├╝m genel modelleri d├Ând├╝r├╝r."""
+    result = await db.execute(select(models.ModelMeta).order_by(models.ModelMeta.uploaded_at.desc()))
+    models_list = result.scalars().all()
+    return [general_model_to_dict(m) for m in models_list]
+
+
+@app.get("/api/company/{company_code}/general-models")
+async def get_company_general_models(
+    company_code: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """┼Şirkete atanm─▒┼ş genel modelleri d├Ând├╝r├╝r."""
+    await verify_company_access(current_user, company_code)
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
+
+    result = await db.execute(
+        select(models.ModelMeta)
+        .join(models.CompanyModel, models.CompanyModel.model_id == models.ModelMeta.id)
+        .where(models.CompanyModel.company_id == company.id)
+        .order_by(models.ModelMeta.uploaded_at.desc())
+    )
+    models_list = result.scalars().all()
+    return [general_model_to_dict(m) for m in models_list]
+
+
+@app.put("/api/company/{company_code}/general-models")
+async def set_company_general_models(
+    company_code: str,
+    payload: dict,
+    admin_user: TokenData = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """┼Şirkete atanacak model listesini toplu g├╝nceller. Body: { model_ids: number[] }"""
+    model_ids = payload.get("model_ids", []) if isinstance(payload, dict) else []
+    if not isinstance(model_ids, list):
+        raise HTTPException(status_code=400, detail="model_ids list olmal─▒d─▒r")
+    normalized_model_ids = list(dict.fromkeys(int(model_id) for model_id in model_ids))
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
+
+    valid_model_ids = set()
+    if normalized_model_ids:
+        valid_models_result = await db.execute(
+            select(models.ModelMeta.id).where(models.ModelMeta.id.in_(normalized_model_ids))
+        )
+        valid_model_ids = set(valid_models_result.scalars().all())
+
+    existing_company_models_result = await db.execute(
+        select(models.CompanyModel).where(models.CompanyModel.company_id == company.id)
+    )
+    existing_company_models = existing_company_models_result.scalars().all()
+    existing_model_ids = {company_model.model_id for company_model in existing_company_models}
+
+    removed_model_ids = existing_model_ids - valid_model_ids
+    added_model_ids = valid_model_ids - existing_model_ids
+
+    if removed_model_ids:
+        await db.execute(
+            delete(models.CompanyModelCamera).where(
+                (models.CompanyModelCamera.company_id == company.id) &
+                (models.CompanyModelCamera.model_id.in_(removed_model_ids))
+            )
+        )
+        await db.execute(
+            delete(models.CompanyModel).where(
+                (models.CompanyModel.company_id == company.id) &
+                (models.CompanyModel.model_id.in_(removed_model_ids))
+            )
+        )
+
+    for model_id in added_model_ids:
+        db.add(models.CompanyModel(company_id=company.id, model_id=model_id, is_active=False))
+
+    await sync_company_model_activation_summary(db, company.id)
+
+    await db.commit()
+    await restart_company_cameras(db, company.id)
+    return {"status": "success", "assigned_count": len(valid_model_ids)}
+
+
+@app.get("/api/company/{company_code}/model-cameras")
+async def get_company_model_cameras(
+    company_code: str,
+    model_id: Optional[int] = None,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """┼Şirket kameralar─▒n─▒ ve model bazl─▒ aktiflik durumunu d├Ând├╝r├╝r."""
+    await verify_company_access(current_user, company_code)
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
+
+    cameras_result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company.id)
+    )
+    cameras = cameras_result.scalars().all()
+
+    active_model_ids_result = await db.execute(
+        select(models.CompanyModelCamera.model_id)
+        .where(
+            (models.CompanyModelCamera.company_id == company.id) &
+            (models.CompanyModelCamera.is_active == True)
+        )
+        .distinct()
+    )
+    active_model_ids = set(active_model_ids_result.scalars().all())
+
+    response = []
+    for cam in cameras:
+        active_models = await get_camera_active_models(db, company.id, cam.id)
+        active_model_id_set = {active_model["id"] for active_model in active_models}
+        selected_model_is_active = (model_id in active_model_id_set) if model_id is not None else bool(active_model_id_set)
+        response.append(
+            camera_to_dict(
+                cam,
+                active_models=active_models,
+                model_is_active=selected_model_is_active,
+            )
+        )
+    return response
+
+
+@app.put("/api/company/{company_code}/model-cameras")
+async def set_company_model_cameras(
+    company_code: str,
+    payload: dict,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Model-kamera atamas─▒ g├╝nceller. Body: { model_id: number, camera_ids: number[] }"""
+    await verify_company_access(current_user, company_code)
+
+    model_id = payload.get("model_id") if isinstance(payload, dict) else None
+    camera_ids = payload.get("camera_ids", []) if isinstance(payload, dict) else []
+
+    if model_id is None:
+        raise HTTPException(status_code=400, detail="model_id zorunludur")
+    if not isinstance(camera_ids, list):
+        raise HTTPException(status_code=400, detail="camera_ids list olmal─▒d─▒r")
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
+
+    company_model_result = await db.execute(
+        select(models.CompanyModel).where(
+            (models.CompanyModel.company_id == company.id) &
+            (models.CompanyModel.model_id == int(model_id))
+        )
+    )
+    company_model = company_model_result.scalar_one_or_none()
+    if not company_model:
+        raise HTTPException(status_code=404, detail="Model bu ┼şirkete atanmam─▒┼ş")
+
+    valid_camera_ids_result = await db.execute(
+        select(models.Camera.id).where(models.Camera.company_id == company.id)
+    )
+    valid_camera_ids = set(valid_camera_ids_result.scalars().all())
+    invalid_camera_ids = [camera_id for camera_id in camera_ids if int(camera_id) not in valid_camera_ids]
+    if invalid_camera_ids:
+        raise HTTPException(status_code=400, detail=f"Ge├ğersiz camera_ids: {invalid_camera_ids}")
+
+    normalized_camera_ids = {int(camera_id) for camera_id in camera_ids}
+
+    existing_assignments_result = await db.execute(
+        select(models.CompanyModelCamera).where(
+            (models.CompanyModelCamera.company_id == company.id) &
+            (models.CompanyModelCamera.model_id == int(model_id))
+        )
+    )
+    existing_assignments = existing_assignments_result.scalars().all()
+    assignments_by_camera = {assignment.camera_id: assignment for assignment in existing_assignments}
+
+    for camera_id in valid_camera_ids:
+        should_be_active = camera_id in normalized_camera_ids
+        assignment = assignments_by_camera.get(camera_id)
+
+        if assignment:
+            assignment.is_active = should_be_active
+        elif should_be_active:
+            db.add(
+                models.CompanyModelCamera(
+                    company_id=company.id,
+                    camera_id=camera_id,
+                    model_id=int(model_id),
+                    is_active=True,
+                )
+            )
+
+    await sync_company_model_activation_summary(db, company.id)
+
+    await db.commit()
+    await restart_company_cameras(db, company.id)
+
+    return {
+        "status": "success",
+        "model_id": int(model_id),
+        "selected_camera_count": len(normalized_camera_ids),
+        "note": "Camera-level model mapping applied. Multiple models can run on the same camera."
+    }
 
 # ===== Company Model Management Endpoints =====
 
@@ -979,10 +1800,10 @@ async def get_company_models(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Belirli bir company için atanan modelleri döndürür.
-    Admin tüm şirketlere, regular users kendi şirketlerine erişebilir.
+    Belirli bir company i├ğin atanan modelleri d├Ând├╝r├╝r.
+    Admin t├╝m ┼şirketlere, regular users kendi ┼şirketlerine eri┼şebilir.
     """
-    # Company access kontrolü
+    # Company access kontrol├╝
     await verify_company_access(current_user, company_code)
     
     try:
@@ -992,7 +1813,7 @@ async def get_company_models(
         )
         company = company_result.scalars().first()
         if not company:
-            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+            raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
         
         # Company'nin modellerini getir
         result = await db.execute(
@@ -1003,7 +1824,7 @@ async def get_company_models(
         )
         company_models = result.scalars().all()
         
-        # Response oluştur
+        # Response olu┼ştur
         response = []
         for cm in company_models:
             response.append({
@@ -1027,7 +1848,7 @@ async def get_company_models(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Model listesi alınamadı: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Model listesi al─▒namad─▒: {str(e)}")
 
 
 @app.post("/api/company/{company_code}/models/{model_id}/assign")
@@ -1038,7 +1859,7 @@ async def assign_model_to_company(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Bir modeli bir şirkete atar. (Admin only)
+    Bir modeli bir ┼şirkete atar. (Admin only)
     """
     try:
         # Company ve Model'i bul
@@ -1047,16 +1868,16 @@ async def assign_model_to_company(
         )
         company = company_result.scalars().first()
         if not company:
-            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+            raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
         
         model_result = await db.execute(
             select(models.ModelMeta).where(models.ModelMeta.id == model_id)
         )
         model = model_result.scalars().first()
         if not model:
-            raise HTTPException(status_code=404, detail="Model bulunamadı")
+            raise HTTPException(status_code=404, detail="Model bulunamad─▒")
         
-        # Zaten atanmış mı kontrol et
+        # Zaten atanm─▒┼ş m─▒ kontrol et
         existing = await db.execute(
             select(models.CompanyModel)
             .where(
@@ -1065,9 +1886,9 @@ async def assign_model_to_company(
             )
         )
         if existing.scalars().first():
-            raise HTTPException(status_code=409, detail="Model zaten bu şirkete atanmış")
+            raise HTTPException(status_code=409, detail="Model zaten bu ┼şirkete atanm─▒┼ş")
         
-        # Yeni atama oluştur
+        # Yeni atama olu┼ştur
         company_model = models.CompanyModel(
             company_id=company.id,
             model_id=model_id,
@@ -1078,7 +1899,7 @@ async def assign_model_to_company(
         
         return {
             "status": "success",
-            "message": f"Model {model.version} şirkete {company.name} atandı"
+            "message": f"Model {model.version} ┼şirkete {company.name} atand─▒"
         }
     except HTTPException:
         raise
@@ -1086,7 +1907,7 @@ async def assign_model_to_company(
         await db.rollback()
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Model atama hatası: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Model atama hatas─▒: {str(e)}")
 
 
 @app.post("/api/company/{company_code}/models/{company_model_id}/activate")
@@ -1096,11 +1917,8 @@ async def activate_model_for_company(
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Belirli bir company için modeli aktifleştir.
-    Aynı anda sadece bir model aktif olabilir.
-    """
-    # Company access kontrolü
+    """Belirli bir company i├ğin modeli t├╝m kameralarda aktifle┼ştir."""
+    # Company access kontrol├╝
     await verify_company_access(current_user, company_code)
     
     try:
@@ -1110,7 +1928,7 @@ async def activate_model_for_company(
         )
         company = company_result.scalars().first()
         if not company:
-            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+            raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
         
         # CompanyModel'i bul (model relationship ile)
         cm_result = await db.execute(
@@ -1122,29 +1940,46 @@ async def activate_model_for_company(
         )
         company_model = cm_result.scalars().first()
         if not company_model:
-            raise HTTPException(status_code=404, detail="Model ataması bulunamadı")
+            raise HTTPException(status_code=404, detail="Model atamas─▒ bulunamad─▒")
         
-        # Aynı şirketteki diğer aktif modelleri pasif yap
-        await db.execute(
-            update(models.CompanyModel)
-            .where(
-                (models.CompanyModel.company_id == company.id) &
-                (models.CompanyModel.is_active == True)
-            )
-            .values(is_active=False)
+        cameras_result = await db.execute(
+            select(models.Camera).where(models.Camera.company_id == company.id)
         )
-        
-        # Bu modeli aktif yap
-        company_model.is_active = True
+        cameras = cameras_result.scalars().all()
+        if not cameras:
+            raise HTTPException(status_code=400, detail="┼Şirkete ait kamera bulunamad─▒")
+
+        assignments_result = await db.execute(
+            select(models.CompanyModelCamera).where(
+                (models.CompanyModelCamera.company_id == company.id) &
+                (models.CompanyModelCamera.model_id == company_model.model_id)
+            )
+        )
+        assignments_by_camera = {
+            assignment.camera_id: assignment for assignment in assignments_result.scalars().all()
+        }
+
+        for camera in cameras:
+            assignment = assignments_by_camera.get(camera.id)
+            if assignment:
+                assignment.is_active = True
+            else:
+                db.add(
+                    models.CompanyModelCamera(
+                        company_id=company.id,
+                        camera_id=camera.id,
+                        model_id=company_model.model_id,
+                        is_active=True,
+                    )
+                )
+
+        await sync_company_model_activation_summary(db, company.id)
         await db.commit()
-        
-        # Model yolunu al ve aktif model path'i güncelle
-        model_path = company_model.model.path
-        set_active_model_path(model_path)
+        await restart_company_cameras(db, company.id)
         
         return {
             "status": "success",
-            "message": f"Model {company_model.model.version} şirkete {company.name} aktifleştirildi"
+            "message": f"Model {company_model.model.version} ┼şirkete ait t├╝m kameralarda aktifle┼ştirildi"
         }
     except HTTPException:
         raise
@@ -1152,7 +1987,7 @@ async def activate_model_for_company(
         await db.rollback()
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Model aktivasyon hatası: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Model aktivasyon hatas─▒: {str(e)}")
 
 
 @app.post("/api/company/{company_code}/models/{company_model_id}/deactivate")
@@ -1162,10 +1997,7 @@ async def deactivate_model_for_company(
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Belirli bir company için modeli deaktifleştir.
-    """
-    # Company access kontrolü
+    """Belirli bir company i├ğin modeli t├╝m kameralarda deaktifle┼ştir."""
     await verify_company_access(current_user, company_code)
     
     try:
@@ -1175,7 +2007,7 @@ async def deactivate_model_for_company(
         )
         company = company_result.scalars().first()
         if not company:
-            raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+            raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
         
         # CompanyModel'i bul
         cm_result = await db.execute(
@@ -1187,17 +2019,24 @@ async def deactivate_model_for_company(
         )
         company_model = cm_result.scalars().first()
         if not company_model:
-            raise HTTPException(status_code=404, detail="Model ataması bulunamadı")
+            raise HTTPException(status_code=404, detail="Model atamas─▒ bulunamad─▒")
         
-        # Modeli deaktif yap
-        company_model.is_active = False
+        await db.execute(
+            update(models.CompanyModelCamera)
+            .where(
+                (models.CompanyModelCamera.company_id == company.id) &
+                (models.CompanyModelCamera.model_id == company_model.model_id)
+            )
+            .values(is_active=False)
+        )
+
+        await sync_company_model_activation_summary(db, company.id)
         await db.commit()
-        
-        set_active_model_path("")
+        await restart_company_cameras(db, company.id)
         
         return {
             "status": "success",
-            "message": f"Model {company_model.model.version} deaktifleştirildi"
+            "message": f"Model {company_model.model.version} t├╝m company kameralar─▒nda deaktifle┼ştirildi"
         }
     except HTTPException:
         raise
@@ -1205,16 +2044,25 @@ async def deactivate_model_for_company(
         await db.rollback()
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Model deaktivasyonu hatası: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Model deaktivasyonu hatas─▒: {str(e)}")
 
 @app.on_event("startup")
 async def startup_event():
     global main_loop, violation_queue, consumer_task
     
-    # Tüm tabloları oluştur (özellikle models tablosu için)
+    # T├╝m tablolar─▒ olu┼ştur (├Âzellikle models tablosu i├ğin)
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+
+        # Legacy DB compatibility: make sure company_model_cameras has expected columns.
+        await ensure_company_model_cameras_schema()
+
+        # Add review_status column to violations if missing (safe no-op when already present).
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE IF EXISTS violations ADD COLUMN IF NOT EXISTS review_status VARCHAR NOT NULL DEFAULT 'pending'"
+            ))
     except Exception as e:
         print(f"Warning: Database initialization failed: {e}")
         print("This may be expected if running without database connection initially")
@@ -1222,37 +2070,18 @@ async def startup_event():
     # AsyncIO loop'u global'e kaydet
     main_loop = asyncio.get_event_loop()
     
-    # Violation queue'yu oluştur
+    # Violation queue'yu olu┼ştur
     violation_queue = asyncio.Queue()
     
-    # Consumer task'ı başlat
+    # Consumer task'─▒ ba┼şlat
     consumer_task = asyncio.create_task(violation_consumer_task(violation_queue))
     
 
-    # 📌 Model'i arka planda ön-yükle (bloke etmez)
-    model_path = get_active_model_path()
-    if model_path and Path(model_path).exists():
-        print(f"[startup] 🚀 Modeli arka planda ön-yüklüyoruz: {model_path}")
-        preload_model_async(model_path)
-        print(f"[startup] ✅ Model ön-yükleme başlatıldı (kamera donmayacak)")
-    
-    # 📌 Tüm kameraları otomatik başlat 
-    try:
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(models.Camera))
-            cameras = result.scalars().all()
-            if cameras:
-                print(f"[startup] 📹 {len(cameras)} kamera bulundu, başlatılıyor...")
-                for cam in cameras:
-                    print(f"[startup] Starting camera: {cam.id} (name: {cam.name}, rtsp: {cam.rtsp_url})")
-                    # Non-blocking kamera başlatma (thread'de çalışacak)
-                    start_camera_thread(cam.id, cam.rtsp_url)
-            else:
-                print(f"[startup] ⚠️ Hiç kamera bulunamadı")
-    except Exception as e:
-        print(f"[startup] ❌ Kamera başlatma hatası: {e}")
-        import traceback
-        traceback.print_exc()
+    # Kamera thread'leri startup'ta otomatik başlatılmaz.
+    # Başlatma tetikleri:
+    # - Regular user login
+    # - Admin company selection
+    print("[startup] Camera auto-start disabled. Waiting for login/company selection trigger.")
 
 # Detect endpoint'i ekleyin
 @app.post("/api/detect")
@@ -1262,26 +2091,26 @@ async def detect(
     current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Yüklenen resmi aktif model ile analiz et
+    Y├╝klenen resmi aktif model ile analiz et
     """
     try:
         if not model_path or model_path == '':
             return {
                 "status": "error",
-                "message": "Model yolu geçersiz. Lütfen bir model aktif edin."
+                "message": "Model yolu ge├ğersiz. L├╝tfen bir model aktif edin."
             }
         
-        # Modeli yükle
+        # Modeli y├╝kle
         from ultralytics import YOLO
         
         model_full_path = model_path
         if not Path(model_full_path).exists():
             return {
                 "status": "error",
-                "message": f"Model dosyası bulunamadı: {model_full_path}"
+                "message": f"Model dosyas─▒ bulunamad─▒: {model_full_path}"
             }
         
-        # Resim dosyasını oku
+        # Resim dosyas─▒n─▒ oku
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -1289,14 +2118,14 @@ async def detect(
         if img is None:
             return {
                 "status": "error",
-                "message": "Resim dosyası okunamadı. Lütfen geçerli bir resim seçin."
+                "message": "Resim dosyas─▒ okunamad─▒. L├╝tfen ge├ğerli bir resim se├ğin."
             }
         
-        # YOLO modelini yükle ve çalıştır
+        # YOLO modelini y├╝kle ve ├ğal─▒┼şt─▒r
         model = YOLO(model_full_path)
         results = model(img)
         
-        # Sonuçları işle
+        # Sonu├ğlar─▒ i┼şle
         detections = []
         for r in results:
             for box in r.boxes:
@@ -1306,7 +2135,7 @@ async def detect(
                     "bbox": box.xyxy[0].tolist()
                 })
         
-        # Annotated image'ı oluştur
+        # Annotated image'─▒ olu┼ştur
         annotated_img = results[0].plot()
         _, buffer = cv2.imencode('.jpg', annotated_img)
         image_base64 = base64.b64encode(buffer).decode()
@@ -1324,6 +2153,6 @@ async def detect(
         traceback.print_exc()
         return {
             "status": "error",
-            "message": f"Detection hatası: {str(e)}"
+            "message": f"Detection hatas─▒: {str(e)}"
         }
 

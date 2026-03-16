@@ -14,7 +14,7 @@ export function Models() {
 
   // General models list
   const [generalModels, setGeneralModels] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   // Metrikleri yönet state'leri
   const [metricsFile, setMetricsFile] = useState(null);
@@ -26,7 +26,11 @@ export function Models() {
   }, []);
 
   const fetchGeneralModels = async () => {
-    if (!token) return;
+    if (!token) {
+      setGeneralModels([]);
+      setLoading(false);
+      return;
+    }
     
     setLoading(true);
     try {

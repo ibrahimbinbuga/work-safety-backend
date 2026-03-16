@@ -8,20 +8,66 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [companyCode, setCompanyCode] = useState(null);
-  const [activeCompanyCode, setActiveCompanyCode] = useState(null);
+  const [activeCompanyCode, setActiveCompanyCodeState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const setActiveCompanyCode = (nextCompanyCode) => {
+    setActiveCompanyCodeState(nextCompanyCode);
+    if (nextCompanyCode) {
+      localStorage.setItem('activeCompanyCode', nextCompanyCode);
+    } else {
+      localStorage.removeItem('activeCompanyCode');
+    }
+  };
+
+  const clearStoredAuth = () => {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('user');
+    localStorage.removeItem('companyCode');
+    localStorage.removeItem('activeCompanyCode');
+    setToken(null);
+    setUser(null);
+    setCompanyCode(null);
+    setActiveCompanyCodeState(null);
+  };
+
+  const validateToken = async (candidateToken) => {
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/auth/me`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${candidateToken}`,
+        },
+      });
+      return res.ok;
+    } catch (e) {
+      return false;
+    }
+  };
+
   // Initialize auth state from localStorage
   useEffect(() => {
+    let isMounted = true;
+
+    const initializeAuth = async () => {
     const storedToken = localStorage.getItem('accessToken');
     const storedUser = localStorage.getItem('user');
     const storedCompanyCode = localStorage.getItem('companyCode');
+    const storedActiveCompanyCode = localStorage.getItem('activeCompanyCode');
     
     if (storedToken && storedUser) {
-      setToken(storedToken);
       try {
+        const tokenIsValid = await validateToken(storedToken);
+        if (!tokenIsValid) {
+          if (isMounted) clearStoredAuth();
+          return;
+        }
+
         const parsedUser = JSON.parse(storedUser);
+        if (!isMounted) return;
+
+        setToken(storedToken);
         setUser(parsedUser);
         
         // Restore companyCode
@@ -31,14 +77,26 @@ export const AuthProvider = ({ children }) => {
         
         // For regular users, also restore activeCompanyCode
         if (parsedUser.role === 'user' && storedCompanyCode) {
-          setActiveCompanyCode(storedCompanyCode);
+          setActiveCompanyCodeState(storedCompanyCode);
+        }
+
+        // For admins, restore last selected company after refresh
+        if (parsedUser.role === 'admin' && storedActiveCompanyCode) {
+          setActiveCompanyCodeState(storedActiveCompanyCode);
         }
       } catch (e) {
         console.error('Failed to parse stored user:', e);
-        localStorage.removeItem('user');
+        if (isMounted) clearStoredAuth();
       }
     }
-    setLoading(false);
+    if (isMounted) setLoading(false);
+    };
+
+    initializeAuth();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const login = async (email, password, companyCode) => {
@@ -85,6 +143,8 @@ export const AuthProvider = ({ children }) => {
       // For admins, activeCompanyCode will be set when they select a company
       if (data.role === 'user') {
         setActiveCompanyCode(data.company_code);
+      } else {
+        setActiveCompanyCode(null);
       }
 
       return true;
@@ -99,7 +159,7 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       // Call backend logout endpoint
-      await apiLogout();
+      await apiLogout(activeCompanyCode);
     } catch (err) {
       console.error('Logout error:', err);
       // Continue with local logout even if API call fails
@@ -108,11 +168,12 @@ export const AuthProvider = ({ children }) => {
       setToken(null);
       setUser(null);
       setCompanyCode(null);
-      setActiveCompanyCode(null);
+      setActiveCompanyCodeState(null);
       setError(null);
       localStorage.removeItem('accessToken');
       localStorage.removeItem('user');
       localStorage.removeItem('companyCode');
+      localStorage.removeItem('activeCompanyCode');
     }
   };
 

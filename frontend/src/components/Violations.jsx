@@ -1,8 +1,32 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, CheckCircle, Clock } from 'lucide-react';
 import { apiClient, addCompanyCodeToUrl } from '../utils/api';
-import { useEffect } from "react";
 import { useAuth } from '../context/AuthContext';
+
+const formatTurkishDate = (raw) => {
+  if (!raw) return '-';
+  try {
+    const d = new Date(raw);
+    if (isNaN(d)) return raw;
+    return d.toLocaleString('tr-TR', {
+      timeZone: 'Europe/Istanbul',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return raw;
+  }
+};
+
+const getTimestampMs = (raw) => {
+  if (!raw) return 0;
+  const parsed = new Date(raw).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
 
 // Şimdilik statik veri (İleride Backend'den çekilecek)
 /*const initialViolations = [
@@ -65,42 +89,120 @@ import { useAuth } from '../context/AuthContext';
 
 
 
+const statusOptions = [
+  { value: 'pending',  label: 'Pending',  classes: 'bg-blue-50 text-blue-700 border-blue-100' },
+  { value: 'reviewed', label: 'Reviewed', classes: 'bg-yellow-50 text-yellow-700 border-yellow-100' },
+  { value: 'resolved', label: 'Resolved', classes: 'bg-green-50 text-green-700 border-green-100' },
+];
+
+function StatusDropdown({ violationId, currentStatus, onUpdate }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const current = statusOptions.find(o => o.value === currentStatus) || statusOptions[0];
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div className="relative inline-block" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium capitalize border cursor-pointer hover:opacity-80 transition-opacity ${current.classes}`}
+      >
+        {current.label}
+        <ChevronDown className="w-3 h-3" />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+          {statusOptions.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => { onUpdate(violationId, opt.value); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 text-xs font-medium hover:bg-gray-50 transition-colors ${
+                opt.value === currentStatus ? 'font-semibold bg-gray-50' : ''
+              }`}
+            >
+              <span className={`inline-block px-2 py-0.5 rounded-full border ${opt.classes}`}>{opt.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Violations() {
   const { isAdmin, activeCompanyCode } = useAuth();
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+  const [sortByDate, setSortByDate] = useState('newest');
   const [violations, setViolations] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     fetchViolations();
   }, [activeCompanyCode]);
 
   const fetchViolations = async () => {
+    setIsLoading(true);
     try {
       const violationsUrl = addCompanyCodeToUrl('/api/violations', activeCompanyCode);
       const response = await apiClient.get(violationsUrl);
 
       const processed = response.data.map(v => ({
-        id: v.violation_id,
+        id: v.id,
         workerName: "Unknown Worker",
         camera: v.ihlal_yapilan_bolge,
         type: v.ihlal_cesidi,
         timestamp: v.tarih_saat,
         severity: "high",
-        status: "pending"
+        status: v.review_status || 'pending'
       }));
 
       setViolations(processed);
     } catch (error) {
       console.error("Violations fetch error:", error);
+    } finally {
+      setIsLoading(false);
     }
   };
-
+  const updateStatus = async (violationId, newStatus) => {
+    // Optimistic update: change UI immediately, rollback on error
+    const previousViolations = [...violations];
+    setViolations(prev =>
+      prev.map(v => v.id === violationId ? { ...v, status: newStatus } : v)
+    );
+    try {
+      await apiClient.patch(`/api/violations/${violationId}/status`, { review_status: newStatus });
+    } catch (error) {
+      console.error('Status update error:', error);
+      setViolations(previousViolations); // rollback
+    }
+  };
   // Filtreleme Mantığı
   const filteredViolations = violations.filter(v => {
     const typeMatch = filterType === 'all' || (filterType === 'helmet' && v.type === 'head') || v.type === filterType;
     const statusMatch = filterStatus === 'all' || v.status === filterStatus;
-    return typeMatch && statusMatch;
+    const timestampMs = getTimestampMs(v.timestamp);
+
+    const fromMs = filterDateFrom ? new Date(`${filterDateFrom}T00:00:00`).getTime() : null;
+    const toMs = filterDateTo ? new Date(`${filterDateTo}T23:59:59.999`).getTime() : null;
+
+    const dateFromMatch = fromMs === null || timestampMs >= fromMs;
+    const dateToMatch = toMs === null || timestampMs <= toMs;
+
+    return typeMatch && statusMatch && dateFromMatch && dateToMatch;
+  });
+
+  const filteredAndSortedViolations = [...filteredViolations].sort((a, b) => {
+    const aMs = getTimestampMs(a.timestamp);
+    const bMs = getTimestampMs(b.timestamp);
+    return sortByDate === 'oldest' ? aMs - bMs : bMs - aMs;
   });
 
   // İstatistikleri hesapla
@@ -176,45 +278,94 @@ export function Violations() {
       {/* Filters and Table Container */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         {/* Table Header & Filters */}
-        <div className="p-6 border-b border-gray-100">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="p-6 border-b border-gray-100 space-y-4">
+          <div className="flex items-center justify-between gap-3">
             <h3 className="text-lg font-bold text-gray-900">Violation Records</h3>
-            
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Type Filter */}
+            <button
+              onClick={() => {
+                setFilterType('all');
+                setFilterStatus('all');
+                setFilterDateFrom('');
+                setFilterDateTo('');
+                setSortByDate('newest');
+              }}
+              className="flex items-center gap-2 border border-gray-300 px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <Filter className="w-4 h-4" />
+              Reset
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Type</label>
               <div className="relative">
-                <select 
-                    value={filterType}
-                    onChange={(e) => setFilterType(e.target.value)}
-                    className="appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                <select
+                  value={filterType}
+                  onChange={(e) => setFilterType(e.target.value)}
+                  className="w-full appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
-                    <option value="all">All Types</option>
-                    <option value="head">Helmet</option>
-                    <option value="vest">Vest</option>
-                    <option value="both">Both</option>
+                  <option value="all">All Types</option>
+                  <option value="head">Helmet</option>
+                  <option value="vest">Vest</option>
+                  <option value="both">Both</option>
                 </select>
                 <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2.5 top-3 pointer-events-none" />
               </div>
+            </div>
 
-              {/* Status Filter */}
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</label>
               <div className="relative">
-                <select 
-                    value={filterStatus}
-                    onChange={(e) => setFilterStatus(e.target.value)}
-                    className="appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                <select
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                  className="w-full appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
-                    <option value="all">All Status</option>
-                    <option value="pending">Pending</option>
-                    <option value="reviewed">Reviewed</option>
-                    <option value="resolved">Resolved</option>
+                  <option value="all">All Status</option>
+                  <option value="pending">Pending</option>
+                  <option value="reviewed">Reviewed</option>
+                  <option value="resolved">Resolved</option>
                 </select>
                 <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2.5 top-3 pointer-events-none" />
               </div>
+            </div>
 
-              <button className="flex items-center gap-2 border border-gray-300 px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
-                <Filter className="w-4 h-4" />
-                More
-              </button>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">From Date</label>
+              <input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="w-full bg-white border border-gray-300 text-gray-700 py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                title="From date"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">To Date</label>
+              <input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="w-full bg-white border border-gray-300 text-gray-700 py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                title="To date"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Sort By Date</label>
+              <div className="relative">
+                <select
+                  value={sortByDate}
+                  onChange={(e) => setSortByDate(e.target.value)}
+                  className="w-full appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="newest">Newest First</option>
+                  <option value="oldest">Oldest First</option>
+                </select>
+                <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2.5 top-3 pointer-events-none" />
+              </div>
             </div>
           </div>
         </div>
@@ -235,7 +386,7 @@ export function Violations() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filteredViolations.map((violation) => (
+              {filteredAndSortedViolations.map((violation) => (
                 <tr key={violation.id} className="hover:bg-gray-50/50 transition-colors">
                   <td className="p-4 text-sm font-medium text-blue-600">{violation.id}</td>
                   <td className="p-4">
@@ -272,7 +423,7 @@ export function Violations() {
                   <td className="p-4">
                     <div className="flex items-center gap-2 text-gray-500">
                       <Calendar className="w-4 h-4" />
-                      <span className="text-sm">{violation.timestamp}</span>
+                      <span className="text-sm">{formatTurkishDate(violation.timestamp)}</span>
                     </div>
                   </td>
                   <td className="p-4">
@@ -284,12 +435,11 @@ export function Violations() {
                     </span>
                   </td>
                   <td className="p-4">
-                    <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium capitalize border
-                      ${violation.status === 'pending' ? 'bg-blue-50 text-blue-700 border-blue-100' : 
-                        violation.status === 'reviewed' ? 'bg-yellow-50 text-yellow-700 border-yellow-100' : 
-                        'bg-green-50 text-green-700 border-green-100'}`}>
-                      {violation.status}
-                    </span>
+                    <StatusDropdown
+                      violationId={violation.id}
+                      currentStatus={violation.status}
+                      onUpdate={updateStatus}
+                    />
                   </td>
                   <td className="p-4">
                     <button className="flex items-center gap-1 text-gray-500 hover:text-blue-600 transition-colors border border-gray-200 px-2 py-1 rounded-md text-xs font-medium hover:border-blue-200 hover:bg-blue-50">
@@ -302,7 +452,13 @@ export function Violations() {
             </tbody>
           </table>
           
-          {filteredViolations.length === 0 && (
+            {isLoading && (
+              <div className="text-center py-10 text-gray-500">
+                <p>Loading violations...</p>
+              </div>
+            )}
+
+            {!isLoading && filteredAndSortedViolations.length === 0 && (
               <div className="text-center py-10 text-gray-500">
                   <p>No violations found matching the filters.</p>
               </div>
