@@ -81,6 +81,10 @@ async def get_current_user_info(
     user = await db.get(models.User, current_user.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "user" and user.company_id is not None:
+        await ensure_company_cameras_started(
+            db, user.company_id, trigger=f"auth-me:user-{user.id}"
+    )
     return user
 
 

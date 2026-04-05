@@ -158,7 +158,7 @@ async def ensure_company_cameras_started(
         select(models.Camera).where(models.Camera.company_id == company_id)
     )
     cameras = result.scalars().all()
-    started = 0
+    started_count = 0
     for cam in cameras:
         existing = g.camera_threads.get(cam.id)
         if existing:
@@ -167,9 +167,14 @@ async def ensure_company_cameras_started(
             g.camera_threads.pop(cam.id, None)
         model_paths = await get_active_model_paths_for_camera(db, cam.company_id, cam.id)
         start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
-        started += 1
-    print(f"[camera-start] trigger={trigger} company_id={company_id} total={len(cameras)} started={started}")
-    return started
+        started_count += 1
+    
+    if started_count > 0:
+        print(
+            f"[camera-start] trigger={trigger} company_id={company_id} "
+            f"total={len(cameras)} started={started_count}"
+    )
+    return started_count
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +199,7 @@ def camera_to_dict(
         "location": cam.location,
         "rtsp_url": cam.rtsp_url,
         "status": runtime_status,
+        "db_status": cam.status,
         "company_id": cam.company_id,
         "last_active": cam.last_active.isoformat() if cam.last_active else None,
         "model_is_active": model_is_active,

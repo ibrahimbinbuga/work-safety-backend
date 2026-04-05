@@ -37,6 +37,7 @@ def get_active_model_path() -> Optional[str]:
     return ACTIVE_MODEL_PATH
 
 
+
 async def get_camera_active_models(db: AsyncSession, company_id: int, camera_id: int) -> list[dict]:
     """Return active model metadata for a given company/camera pair."""
     result = await db.execute(
@@ -60,7 +61,37 @@ async def get_camera_active_models(db: AsyncSession, company_id: int, camera_id:
         for m in result.scalars().all()
     ]
 
+"""
+def camera_to_dict(cam: models.Camera, active_models: Optional[list[dict]] = None, model_is_active: Optional[bool] = None) -> dict:
+    """"Serialize camera row with model assignment info for frontend usage.""""
+    active_models = active_models or []
+    if model_is_active is None:
+        model_is_active = len(active_models) > 0
 
+    thread_info = camera_threads.get(cam.id)
+    has_running_thread = bool(thread_info and thread_info['thread'].is_alive())
+    has_recent_frame = get_latest_frame(cam.id) is not None
+    # Runtime status (API): not the DB column — reflects live thread + frames
+    if has_running_thread and has_recent_frame:
+        runtime_status = "online"
+    elif has_running_thread:
+        runtime_status = "connecting"  # thread up, waiting for first frame (e.g. HTTP/MJPEG)
+    else:
+        runtime_status = "offline"
+
+    return {
+        "id": cam.id,
+        "name": cam.name,
+        "location": cam.location,
+        "rtsp_url": cam.rtsp_url,
+        "status": runtime_status,
+        "db_status": cam.status,
+        "company_id": cam.company_id,
+        "last_active": cam.last_active.isoformat() if cam.last_active else None,
+        "model_is_active": model_is_active,
+        "active_models": active_models,
+    }
+"""
 async def get_active_model_paths_for_camera(
     db: AsyncSession, company_id: int, camera_id: int
 ) -> list[str]:
