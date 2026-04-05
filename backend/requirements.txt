@@ -10,5 +10,6 @@ passlib[bcrypt]
 bcrypt
 python-multipart
 opencv-python
+requests
 ultralytics
 argon2-cffi

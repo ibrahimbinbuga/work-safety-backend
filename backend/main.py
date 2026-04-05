@@ -433,10 +433,11 @@ async def ensure_company_cameras_started(db: AsyncSession, company_id: int, trig
         start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
         started_count += 1
 
-    print(
-        f"[camera-start] trigger={trigger} company_id={company_id} "
-        f"total={len(cameras)} started={started_count}"
-    )
+    if started_count > 0:
+        print(
+            f"[camera-start] trigger={trigger} company_id={company_id} "
+            f"total={len(cameras)} started={started_count}"
+        )
     return started_count
 
 async def violation_consumer_task(queue: asyncio.Queue):
@@ -655,10 +656,15 @@ async def login(login_request: LoginRequest, db: AsyncSession = Depends(get_db))
 async def get_current_user_info(current_user: TokenData = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """
     Get current authenticated user information.
+    Also starts company camera threads after refresh (login alone used to be the only trigger).
     """
     user = await db.get(models.User, current_user.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "user" and user.company_id is not None:
+        await ensure_company_cameras_started(
+            db, user.company_id, trigger=f"auth-me:user-{user.id}"
+        )
     return user
 
 
@@ -913,7 +919,13 @@ def camera_to_dict(cam: models.Camera, active_models: Optional[list[dict]] = Non
     thread_info = camera_threads.get(cam.id)
     has_running_thread = bool(thread_info and thread_info['thread'].is_alive())
     has_recent_frame = get_latest_frame(cam.id) is not None
-    runtime_status = "online" if (has_running_thread and has_recent_frame) else "offline"
+    # Runtime status (API): not the DB column — reflects live thread + frames
+    if has_running_thread and has_recent_frame:
+        runtime_status = "online"
+    elif has_running_thread:
+        runtime_status = "connecting"  # thread up, waiting for first frame (e.g. HTTP/MJPEG)
+    else:
+        runtime_status = "offline"
 
     return {
         "id": cam.id,
@@ -921,6 +933,7 @@ def camera_to_dict(cam: models.Camera, active_models: Optional[list[dict]] = Non
         "location": cam.location,
         "rtsp_url": cam.rtsp_url,
         "status": runtime_status,
+        "db_status": cam.status,
         "company_id": cam.company_id,
         "last_active": cam.last_active.isoformat() if cam.last_active else None,
         "model_is_active": model_is_active,
@@ -1057,7 +1070,11 @@ async def get_cameras(
         cameras = result.scalars().all()
         return [camera_to_dict(cam, model_is_active=False, active_models=[]) for cam in cameras]
 
-    # Regular user or admin with specific company
+    # Regular user or admin with specific company — ensure threads run (e.g. admin after refresh)
+    await ensure_company_cameras_started(
+        db, company.id, trigger=f"get-cameras:user-{current_user.user_id}"
+    )
+
     result = await db.execute(
         select(models.Camera).where(models.Camera.company_id == company.id)
     )
@@ -1678,6 +1695,10 @@ async def get_company_model_cameras(
     company = company_result.scalar_one_or_none()
     if not company:
         raise HTTPException(status_code=404, detail="┼Şirket bulunamad─▒")
+
+    await ensure_company_cameras_started(
+        db, company.id, trigger=f"model-cameras:{current_user.user_id}"
+    )
 
     cameras_result = await db.execute(
         select(models.Camera).where(models.Camera.company_id == company.id)

@@ -3,8 +3,14 @@ import threading
 import time
 import os
 import cv2
+import numpy as np
 from typing import Optional
 from ultralytics import YOLO
+
+try:
+    import requests
+except ImportError:
+    requests = None  # type: ignore
 from state_control import StateController
 from datetime import datetime
 
@@ -70,11 +76,179 @@ def _is_rtsp_source(source) -> bool:
     return isinstance(source, str) and source.startswith('rtsp://')
 
 
+def _is_http_source(source) -> bool:
+    if not isinstance(source, str):
+        return False
+    s = source.strip().lower()
+    return s.startswith('http://') or s.startswith('https://')
+
+
+def _is_network_stream(source) -> bool:
+    """RTSP or HTTP(S) — may need reconnect when reads fail."""
+    return _is_rtsp_source(source) or _is_http_source(source)
+
+
 def _is_local_source(source) -> bool:
     return isinstance(source, int) or (isinstance(source, str) and source.isdigit())
 
 
+class HttpMjpegCapture:
+    """
+    Many phone / IP camera apps expose MJPEG over HTTP that works in a browser but
+    fails with cv2.VideoCapture (FFmpeg). This reader streams the URL with requests,
+    extracts JPEG frames (0xFFD8 … 0xFFD9), and decodes with cv2.imdecode.
+    """
+
+    def __init__(self, url: str):
+        self.url = url.strip()
+        self._lock = threading.Lock()
+        self._latest = None
+        self._stop = threading.Event()
+        self._fatal = False
+        self._thread = threading.Thread(target=self._run, name=f"HttpMjpeg-{id(self)}", daemon=True)
+        self._thread.start()
+        # Wait briefly for first frame so isOpened / open checks behave
+        t0 = time.time()
+        while time.time() - t0 < 20.0:
+            with self._lock:
+                if self._latest is not None:
+                    break
+            if self._fatal:
+                break
+            if not self._thread.is_alive():
+                break
+            time.sleep(0.05)
+
+    def _run(self):
+        if requests is None:
+            print("[HttpMjpegCapture] requests not installed; pip install requests")
+            self._fatal = True
+            return
+        buf = b""
+        try:
+            with requests.get(
+                self.url,
+                stream=True,
+                timeout=(15, 120),
+                headers={"User-Agent": "Mozilla/5.0 (compatible; SafetyWatch/1.0)"},
+            ) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    if self._stop.is_set():
+                        break
+                    if not chunk:
+                        continue
+                    buf += chunk
+                    if len(buf) > 4 * 1024 * 1024:
+                        buf = buf[-2 * 1024 * 1024 :]
+                    while True:
+                        start = buf.find(b"\xff\xd8")
+                        if start == -1:
+                            break
+                        end = buf.find(b"\xff\xd9", start + 2)
+                        if end == -1:
+                            buf = buf[start:]
+                            break
+                        jpg = buf[start : end + 2]
+                        buf = buf[end + 2 :]
+                        frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        if frame is not None and frame.size > 0:
+                            with self._lock:
+                                self._latest = frame
+        except Exception as e:
+            print(f"[HttpMjpegCapture] stream error for {self.url!r}: {e}")
+            self._fatal = True
+
+    def read(self):
+        try:
+            with self._lock:
+                if self._latest is not None:
+                    return True, self._latest.copy()
+        except Exception as e:
+            print(f"[HttpMjpegCapture] read error: {e}")
+        return False, None
+
+    def isOpened(self):
+        if self._fatal:
+            return False
+        return self._thread.is_alive()
+
+    def release(self):
+        self._stop.set()
+        self._thread.join(timeout=5.0)
+
+
+def _create_capture_http(url: str):
+    """
+    HTTP/MJPEG IP cameras: default OpenCV backend often fails on Windows.
+    Try CAP_FFMPEG first, then CAP_ANY, then default. Warm-up reads help MJPEG.
+    """
+    url = url.strip()
+    candidates = []
+    if hasattr(cv2, 'CAP_FFMPEG'):
+        candidates.append((cv2.CAP_FFMPEG, 'CAP_FFMPEG'))
+    if hasattr(cv2, 'CAP_ANY'):
+        candidates.append((cv2.CAP_ANY, 'CAP_ANY'))
+    candidates.append((None, 'default'))
+
+    for backend, name in candidates:
+        cap = None
+        try:
+            if backend is not None:
+                cap = cv2.VideoCapture(url, backend)
+            else:
+                cap = cv2.VideoCapture(url)
+            if not cap.isOpened():
+                if cap:
+                    cap.release()
+                continue
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            try:
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 15000)
+                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 15000)
+            except Exception:
+                pass
+            # MJPEG over HTTP often needs several reads before a valid frame
+            for attempt in range(30):
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    print(f"[_create_capture] HTTP stream OK ({name}), frame after {attempt + 1} read(s)")
+                    return cap
+            print(f"[_create_capture] HTTP opened ({name}) but no frame yet; main loop will retry")
+            return cap
+        except Exception as e:
+            print(f"[_create_capture] HTTP open failed ({name}): {e}")
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+    return None
+
+
 def _create_capture(source):
+    # HTTP / HTTPS — prefer requests+JPEG parse (phone IP cameras); then OpenCV FFmpeg
+    if _is_http_source(source):
+        url = str(source).strip()
+        if requests is not None:
+            try:
+                cap_mj = HttpMjpegCapture(url)
+                if cap_mj.isOpened():
+                    ok, frm = cap_mj.read()
+                    if ok and frm is not None:
+                        print(f"[_create_capture] HTTP MJPEG via requests+JPEG parse OK: {url[:80]}...")
+                        return cap_mj
+                    # Thread alive but no frame yet — still use (main loop will read)
+                    print(f"[_create_capture] HTTP MJPEG reader running, waiting for frames: {url[:80]}...")
+                    return cap_mj
+                cap_mj.release()
+            except Exception as e:
+                print(f"[_create_capture] HttpMjpegCapture failed, trying OpenCV: {e}")
+        cap = _create_capture_http(url)
+        if cap is not None:
+            return cap
+        return cv2.VideoCapture(url)
+
     # On Windows, MSMF often emits grabFrame warnings for local webcams.
     # Prefer DirectShow for local camera indices and fallback to default backend.
     if _is_local_source(source):
@@ -434,27 +608,19 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
             
             if not source_cap.isOpened():
                 print(f"[CameraRunner][Camera {camera_id}] Failed to open camera source: {source}")
-                if _is_rtsp_source(source):
-                    print(f"[CameraRunner][Camera {camera_id}] RTSP open failed; entering reconnect loop")
+                if _is_network_stream(source):
+                    print(f"[CameraRunner][Camera {camera_id}] Network stream: will retry in main loop (RTSP/HTTP).")
                 else:
-                    # Try to find available local camera
-                    for i in range(5):
-                        test_cap = cv2.VideoCapture(i)
-                        if test_cap.isOpened():
-                            ret, _ = test_cap.read()
-                            if ret:
-                                print(f"[CameraRunner][Camera {camera_id}] Found working camera at index {i}")
-                                test_cap.release()
-                                source_cap = _create_capture(i)
-                                source = i
-                                break
-                            test_cap.release()
-
-                    if not source_cap.isOpened():
-                        print(f"[CameraRunner][Camera {camera_id}] No working camera found, exiting thread")
-                        use_model = False
-                        return
-            print(f"[CameraRunner][Camera {camera_id}] Camera opened, starting detection loop")
+                    # Never fall back to laptop webcam when a non-network source fails
+                    print(
+                        f"[CameraRunner][Camera {camera_id}] Not falling back to local webcam — "
+                        "fix rtsp_url or network."
+                    )
+                    return
+            if source_cap.isOpened():
+                print(f"[CameraRunner][Camera {camera_id}] Camera opened, starting detection loop")
+            else:
+                print(f"[CameraRunner][Camera {camera_id}] RTSP capture not open yet; main loop will reconnect.")
             # We'll process frames manually in the loop below
             results = None
             cap = source_cap
@@ -465,29 +631,19 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
             
             if not cap.isOpened():
                 print(f"[CameraRunner][Camera {camera_id}] ERROR: Failed to open camera source: {source}")
-                if _is_rtsp_source(source):
-                    print(f"[CameraRunner][Camera {camera_id}] RTSP open failed; entering reconnect loop")
+                if _is_network_stream(source):
+                    print(f"[CameraRunner][Camera {camera_id}] Network stream: will retry in main loop (RTSP/HTTP).")
                 else:
-                    print(f"[CameraRunner][Camera {camera_id}] Trying to list available cameras...")
-                    # Try to find available local camera
-                    for i in range(5):
-                        test_cap = cv2.VideoCapture(i)
-                        if test_cap.isOpened():
-                            ret, _ = test_cap.read()
-                            if ret:
-                                print(f"[CameraRunner][Camera {camera_id}] Found working camera at index {i}")
-                                test_cap.release()
-                                cap = _create_capture(i)
-                                if cap.isOpened():
-                                    source = i
-                                    break
-                            test_cap.release()
+                    print(
+                        f"[CameraRunner][Camera {camera_id}] Not falling back to local webcam — "
+                        "fix rtsp_url or network."
+                    )
+                    return
 
-                    if not cap.isOpened():
-                        print(f"[CameraRunner][Camera {camera_id}] No working camera found, exiting thread")
-                        return
-            
-            print(f"[CameraRunner][Camera {camera_id}] Camera opened successfully")
+            if cap.isOpened():
+                print(f"[CameraRunner][Camera {camera_id}] Camera opened successfully")
+            else:
+                print(f"[CameraRunner][Camera {camera_id}] RTSP capture not open yet; main loop will reconnect.")
             results = None
         frame_count = 0
         detections = []  # last known detections, reused between inference frames
@@ -514,10 +670,11 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
                     if consecutive_failures % 30 == 0:
                         print(f"[CameraRunner][Camera {camera_id}] Failed to read frame (consecutive: {consecutive_failures})")
 
-                    if _is_rtsp_source(source) and consecutive_failures >= MAX_CONSECUTIVE_READ_FAILURES:
+                    if _is_network_stream(source) and consecutive_failures >= MAX_CONSECUTIVE_READ_FAILURES:
                         reconnect_attempts += 1
                         backoff = min(5.0, float(reconnect_attempts))
-                        print(f"[CameraRunner][Camera {camera_id}] Reconnecting RTSP (attempt {reconnect_attempts}) in {backoff:.1f}s...")
+                        kind = 'HTTP' if _is_http_source(source) else 'RTSP'
+                        print(f"[CameraRunner][Camera {camera_id}] Reconnecting {kind} (attempt {reconnect_attempts}) in {backoff:.1f}s...")
                         try:
                             cap.release()
                         except Exception:
@@ -527,9 +684,9 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
                         if cap.isOpened():
                             consecutive_failures = 0
                             reconnect_attempts = 0
-                            print(f"[CameraRunner][Camera {camera_id}] RTSP reconnect successful")
+                            print(f"[CameraRunner][Camera {camera_id}] {kind} reconnect successful")
                         else:
-                            print(f"[CameraRunner][Camera {camera_id}] RTSP reconnect failed")
+                            print(f"[CameraRunner][Camera {camera_id}] {kind} reconnect failed")
 
                     time.sleep(0.1)
                     continue
@@ -581,9 +738,12 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
                     helmet_count = len([d for d in detections if d.get('canonical_class') == 'helmet'])
                     vest_count = len([d for d in detections if d.get('canonical_class') == 'vest'])
                     head_count = len([d for d in detections if d.get('canonical_class') == 'head'])
+                    fallen_count = len([d for d in detections if d.get('canonical_class') == 'fallen'])
+                    sitting_count = len([d for d in detections if d.get('canonical_class') == 'sitting'])
+                    standing_count = len([d for d in detections if d.get('canonical_class') == 'standing'])
                     print(
                         f"[CameraRunner][Camera {camera_id}] Frame {frame_count} - "
-                        f"Persons: {person_count}, Helmets: {helmet_count}, Vests: {vest_count}, Heads: {head_count}, "
+                        f"Persons: {person_count}, Helmets: {helmet_count}, Vests: {vest_count}, Heads: {head_count}, Fallen: {fallen_count}, Sitting: {sitting_count}, Standing: {standing_count}, "
                         f"Total: {len(detections)}, Models: {len(loaded_models)}"
                     )
 
@@ -659,10 +819,11 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
                     if consecutive_failures % 30 == 0:  # Log every 30 failures
                         print(f"[CameraRunner][Camera {camera_id}] Failed to read frame (consecutive failures: {consecutive_failures})")
 
-                    if _is_rtsp_source(source) and consecutive_failures >= MAX_CONSECUTIVE_READ_FAILURES:
+                    if _is_network_stream(source) and consecutive_failures >= MAX_CONSECUTIVE_READ_FAILURES:
                         reconnect_attempts += 1
                         backoff = min(5.0, float(reconnect_attempts))
-                        print(f"[CameraRunner][Camera {camera_id}] Reconnecting RTSP (attempt {reconnect_attempts}) in {backoff:.1f}s...")
+                        kind = 'HTTP' if _is_http_source(source) else 'RTSP'
+                        print(f"[CameraRunner][Camera {camera_id}] Reconnecting {kind} (no model, attempt {reconnect_attempts}) in {backoff:.1f}s...")
                         try:
                             cap.release()
                         except Exception:
@@ -672,9 +833,9 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
                         if cap.isOpened():
                             consecutive_failures = 0
                             reconnect_attempts = 0
-                            print(f"[CameraRunner][Camera {camera_id}] RTSP reconnect successful")
+                            print(f"[CameraRunner][Camera {camera_id}] {kind} reconnect successful")
                         else:
-                            print(f"[CameraRunner][Camera {camera_id}] RTSP reconnect failed")
+                            print(f"[CameraRunner][Camera {camera_id}] {kind} reconnect failed")
 
                     time.sleep(0.1)
                     continue
