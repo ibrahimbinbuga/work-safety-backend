@@ -119,7 +119,7 @@ async def get_violation_check_interval_for_camera(
             & (models.CompanyModelCamera.is_active == True)
         )
     )
-    priorities = [str(p) for p in result.scalars().all() if p]
+    priorities = [p.value for p in result.scalars().all() if p]
     if not priorities:
         return PRIORITY_INTERVALS["medium"]
     return min(PRIORITY_INTERVALS.get(p, PRIORITY_INTERVALS["medium"]) for p in priorities)
