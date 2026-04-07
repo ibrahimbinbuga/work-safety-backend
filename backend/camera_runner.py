@@ -529,12 +529,13 @@ def _draw_status_overlay(frame, loaded_models_count: int, detections_count: int)
     )
     return annotated
 
-def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violation_queue, stop_event: threading.Event, debug: bool = False):
+def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violation_queue, stop_event: threading.Event, debug: bool = False, violation_check_interval: float = 600.0):
     """
     Blocking function intended to run in a separate thread.
     - loop: asyncio loop from the main app
     - violation_queue: asyncio.Queue to put violation dicts (use loop.call_soon_threadsafe)
     - stop_event: threading.Event used to stop the thread gracefully
+    - violation_check_interval: saniye cinsinden detection kayıt sıklığı (priority'e göre belirlenir)
     """
     state_controller = StateController(min_log_interval=1.0)
 
@@ -647,8 +648,8 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
             results = None
         frame_count = 0
         detections = []  # last known detections, reused between inference frames
-        # Violation check interval: check violations every 4 seconds
-        VIOLATION_CHECK_INTERVAL = 20.0  # seconds
+        # Violation check interval: priority'e göre belirlenir (critical=30s, high=120s, medium=600s, low=1800s)
+        VIOLATION_CHECK_INTERVAL = violation_check_interval
         last_violation_check_time = time.time()
         # Run inference only every N frames to avoid freezing on CPU.
         # Between inference frames the last known detections are reused so

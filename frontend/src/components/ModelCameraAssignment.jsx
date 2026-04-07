@@ -2,6 +2,13 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiClient } from '../utils/api';
 
+const PRIORITY_OPTIONS = [
+  { value: 'critical', label: 'Critical', description: '30 sn', color: 'text-red-600' },
+  { value: 'high',     label: 'High',     description: '2 dk',  color: 'text-orange-500' },
+  { value: 'medium',   label: 'Medium',   description: '10 dk', color: 'text-yellow-600' },
+  { value: 'low',      label: 'Low',      description: '30 dk', color: 'text-green-600' },
+];
+
 export function ModelCameraAssignment() {
   const { isAdmin, activeCompanyCode } = useAuth();
   const [cameras, setCameras] = useState([]);
@@ -15,6 +22,8 @@ export function ModelCameraAssignment() {
   const [modelCameraOverview, setModelCameraOverview] = useState({});
   const [loadingOverview, setLoadingOverview] = useState(false);
   const [cameraSelectionByModel, setCameraSelectionByModel] = useState({});
+  // { "modelId_cameraId": priority }
+  const [cameraPriorityByModel, setCameraPriorityByModel] = useState({});
   const [savingAssignments, setSavingAssignments] = useState(false);
 
   const fetchModelCameraOverview = async (modelList = assignedModels) => {
@@ -22,6 +31,7 @@ export function ModelCameraAssignment() {
     if (!Array.isArray(modelList) || modelList.length === 0) {
       setModelCameraOverview({});
       setCameraSelectionByModel({});
+      setCameraPriorityByModel({});
       return;
     }
 
@@ -38,24 +48,30 @@ export function ModelCameraAssignment() {
             .filter((camera) => camera.model_is_active)
             .map((camera) => ({ id: camera.id, name: camera.name, location: camera.location }));
 
-          return [model.id, activeCameras];
+          const priorityMap = {};
+          data.forEach((camera) => {
+            const key = `${model.id}_${camera.id}`;
+            priorityMap[key] = camera.priority || 'medium';
+          });
+
+          return { modelId: model.id, activeCameras, priorityMap };
         })
       );
 
-      const overviewMap = Object.fromEntries(entries);
+      const overviewMap = Object.fromEntries(entries.map((e) => [e.modelId, e.activeCameras]));
       const selectionMap = Object.fromEntries(
-        entries.map(([modelId, activeCameras]) => [
-          modelId,
-          activeCameras.map((camera) => camera.id),
-        ])
+        entries.map((e) => [e.modelId, e.activeCameras.map((c) => c.id)])
       );
+      const priorityMerged = Object.assign({}, ...entries.map((e) => e.priorityMap));
 
       setModelCameraOverview(overviewMap);
       setCameraSelectionByModel(selectionMap);
+      setCameraPriorityByModel(priorityMerged);
     } catch (error) {
       console.error('Model camera overview load error:', error);
       setModelCameraOverview({});
       setCameraSelectionByModel({});
+      setCameraPriorityByModel({});
     } finally {
       setLoadingOverview(false);
     }
@@ -96,6 +112,7 @@ export function ModelCameraAssignment() {
       setSelectedAssignedModelIds([]);
       setModelCameraOverview({});
       setCameraSelectionByModel({});
+      setCameraPriorityByModel({});
       setLoadingAssignedModels(false);
       return;
     }
@@ -113,6 +130,7 @@ export function ModelCameraAssignment() {
       setSelectedAssignedModelIds([]);
       setModelCameraOverview({});
       setCameraSelectionByModel({});
+      setCameraPriorityByModel({});
     } finally {
       setLoadingAssignedModels(false);
     }
@@ -136,12 +154,13 @@ export function ModelCameraAssignment() {
       const nextSelected = selected.includes(cameraId)
         ? selected.filter((id) => id !== cameraId)
         : [...selected, cameraId];
-
-      return {
-        ...prev,
-        [modelId]: nextSelected,
-      };
+      return { ...prev, [modelId]: nextSelected };
     });
+  };
+
+  const handlePriorityChange = (modelId, cameraId, priority) => {
+    const key = `${modelId}_${cameraId}`;
+    setCameraPriorityByModel((prev) => ({ ...prev, [key]: priority }));
   };
 
   const handleSaveModels = async () => {
@@ -165,12 +184,20 @@ export function ModelCameraAssignment() {
       setSavingAssignments(true);
 
       await Promise.all(
-        assignedModels.map((model) =>
-          apiClient.put(`/api/company/${activeCompanyCode}/model-cameras`, {
+        assignedModels.map((model) => {
+          const selectedCameraIds = cameraSelectionByModel[model.id] || [];
+          const camera_priorities = {};
+          cameras.forEach((camera) => {
+            const key = `${model.id}_${camera.id}`;
+            const p = cameraPriorityByModel[key];
+            if (p) camera_priorities[String(camera.id)] = p;
+          });
+          return apiClient.put(`/api/company/${activeCompanyCode}/model-cameras`, {
             model_id: model.id,
-            camera_ids: cameraSelectionByModel[model.id] || [],
-          })
-        )
+            camera_ids: selectedCameraIds,
+            camera_priorities,
+          });
+        })
       );
 
       await fetchModelCameraOverview();
@@ -185,7 +212,7 @@ export function ModelCameraAssignment() {
     return (
       <div className="space-y-6 p-6">
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
-          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+          <p className="text-amber-900 text-lg font-semibold">Please select a company from the sidebar.</p>
         </div>
       </div>
     );
@@ -271,7 +298,7 @@ export function ModelCameraAssignment() {
           <div>
             <h3 className="text-lg font-semibold text-gray-900">Model Camera Assignment Overview</h3>
             <p className="text-xs text-gray-500">
-              Select cameras for each model directly here. You can update multiple models at the same time.
+              Select cameras and set detection priority for each model.
             </p>
           </div>
           <button
@@ -281,6 +308,16 @@ export function ModelCameraAssignment() {
           >
             {savingAssignments ? 'Saving...' : 'Save All Assignments'}
           </button>
+        </div>
+
+        {/* Priority legend */}
+        <div className="flex flex-wrap gap-3 mb-4 text-xs text-gray-500">
+          <span className="font-medium">Detection interval:</span>
+          {PRIORITY_OPTIONS.map((p) => (
+            <span key={p.value} className={`${p.color} font-medium`}>
+              {p.label}: {p.description}
+            </span>
+          ))}
         </div>
 
         {loadingOverview || loadingCameras || loadingAssignedModels ? (
@@ -310,23 +347,46 @@ export function ModelCameraAssignment() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                    {cameras.map((camera) => (
-                      <label
-                        key={`${model.id}-${camera.id}`}
-                        className="flex items-center gap-2 p-2 border border-gray-100 rounded-md hover:bg-gray-50"
-                      >
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={selectedIds.includes(camera.id)}
-                          onChange={() => handleToggleModelCamera(model.id, camera.id)}
-                        />
-                        <div>
-                          <p className="text-sm text-gray-900">{camera.name}</p>
-                          <p className="text-xs text-gray-500">{camera.location || '-'}</p>
+                    {cameras.map((camera) => {
+                      const key = `${model.id}_${camera.id}`;
+                      const currentPriority = cameraPriorityByModel[key] || 'medium';
+                      const isSelected = selectedIds.includes(camera.id);
+                      const priorityOption = PRIORITY_OPTIONS.find((p) => p.value === currentPriority);
+
+                      return (
+                        <div
+                          key={`${model.id}-${camera.id}`}
+                          className="border border-gray-100 rounded-md p-2 hover:bg-gray-50"
+                        >
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 flex-shrink-0"
+                              checked={isSelected}
+                              onChange={() => handleToggleModelCamera(model.id, camera.id)}
+                            />
+                            <div className="min-w-0">
+                              <p className="text-sm text-gray-900 truncate">{camera.name}</p>
+                              <p className="text-xs text-gray-500 truncate">{camera.location || '-'}</p>
+                            </div>
+                          </label>
+                          <div className="mt-2 flex items-center gap-1">
+                            <span className="text-xs text-gray-400">Priority:</span>
+                            <select
+                              value={currentPriority}
+                              onChange={(e) => handlePriorityChange(model.id, camera.id, e.target.value)}
+                              className={`text-xs border border-gray-200 rounded px-1 py-0.5 bg-white font-medium ${priorityOption?.color || 'text-gray-700'}`}
+                            >
+                              {PRIORITY_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label} ({opt.description})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                         </div>
-                      </label>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">

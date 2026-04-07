@@ -25,7 +25,7 @@ from services.camera_service import (
     start_camera_thread,
     stop_camera_thread,
 )
-from services.model_service import get_active_model_paths_for_camera, get_camera_active_models
+from services.model_service import get_active_model_paths_for_camera, get_camera_active_models, get_violation_check_interval_for_camera
 
 router = APIRouter()
 
@@ -101,7 +101,8 @@ async def create_camera(
     await db.refresh(new_camera)
 
     model_paths = await get_active_model_paths_for_camera(db, company.id, new_camera.id)
-    start_camera_thread(new_camera.id, new_camera.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
+    interval = await get_violation_check_interval_for_camera(db, company.id, new_camera.id)
+    start_camera_thread(new_camera.id, new_camera.rtsp_url, model_paths=model_paths, use_default_model=not model_paths, violation_check_interval=interval)
 
     active_models = await get_camera_active_models(db, company.id, new_camera.id)
     return camera_to_dict(new_camera, active_models=active_models)
@@ -194,7 +195,8 @@ async def api_start_local_camera(
                 )
 
         model_paths = await get_active_model_paths_for_camera(session, cam.company_id, cam.id)
-        start_camera_thread(cam.id, "0", model_paths=model_paths, use_default_model=not model_paths)
+        interval = await get_violation_check_interval_for_camera(session, cam.company_id, cam.id)
+        start_camera_thread(cam.id, "0", model_paths=model_paths, use_default_model=not model_paths, violation_check_interval=interval)
     return {"status": "started with local camera", "camera_id": camera_id}
 
 
