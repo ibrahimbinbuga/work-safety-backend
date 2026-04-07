@@ -270,7 +270,7 @@ async def get_company_model_cameras(
         )
         for row in assignments_result:
             priority_by_camera[row.camera_id] = {
-                "priority": str(row.priority) if row.priority else "medium",
+                "priority": row.priority.value if row.priority else "medium",
                 "assignment_id": row.id,
             }
 
