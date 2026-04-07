@@ -138,6 +138,14 @@ if not MODEL_PATH:
 # Aktif model yolunu yönetmek için global değişken
 ACTIVE_MODEL_PATH = MODEL_PATH
 
+# Priority → detection kayıt aralığı (saniye)
+PRIORITY_INTERVALS: dict = {
+    "critical": 30.0,
+    "high": 120.0,
+    "medium": 600.0,
+    "low": 1800.0,
+}
+
 def set_active_model_path(path: str):
     """
     Aktif model yolunu günceller. Boş path verilirse devre dışı bırakır.
@@ -168,6 +176,22 @@ async def get_active_model_paths_for_camera(db: AsyncSession, company_id: int, c
     active_models = await get_camera_active_models(db, company_id, camera_id)
     paths = [model.get("path") for model in active_models if model.get("path")]
     return paths
+
+
+async def get_violation_check_interval_for_camera(db: AsyncSession, company_id: int, camera_id: int) -> float:
+    """Kameranın aktif model atamalarındaki en yüksek önceliğe göre violation kayıt aralığını döndürür."""
+    result = await db.execute(
+        select(models.CompanyModelCamera.priority)
+        .where(
+            (models.CompanyModelCamera.company_id == company_id) &
+            (models.CompanyModelCamera.camera_id == camera_id) &
+            (models.CompanyModelCamera.is_active == True)
+        )
+    )
+    priorities = [str(p) for p in result.scalars().all() if p]
+    if not priorities:
+        return PRIORITY_INTERVALS["medium"]
+    return min(PRIORITY_INTERVALS.get(p, PRIORITY_INTERVALS["medium"]) for p in priorities)
 
 
 def is_local_camera_source(source: Optional[str]) -> bool:
@@ -241,8 +265,9 @@ async def restart_camera_with_current_models(db: AsyncSession, camera: models.Ca
     """Restart camera thread with current active model mapping."""
     stop_camera_thread(camera.id)
     model_paths = await get_active_model_paths_for_camera(db, camera.company_id, camera.id)
+    interval = await get_violation_check_interval_for_camera(db, camera.company_id, camera.id)
     source = "0" if force_local else camera.rtsp_url
-    start_camera_thread(camera.id, source, model_paths=model_paths, use_default_model=not model_paths)
+    start_camera_thread(camera.id, source, model_paths=model_paths, use_default_model=not model_paths, violation_check_interval=interval)
 
 
 async def restart_company_cameras(db: AsyncSession, company_id: int):
@@ -347,6 +372,13 @@ async def ensure_company_model_cameras_schema():
 
         await conn.execute(text("UPDATE company_model_cameras SET is_active = FALSE WHERE is_active IS NULL"))
 
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS company_model_cameras ADD COLUMN IF NOT EXISTS priority VARCHAR DEFAULT 'medium'"
+        ))
+        await conn.execute(text(
+            "UPDATE company_model_cameras SET priority = 'medium' WHERE priority IS NULL"
+        ))
+
 
 def start_camera_thread(
     camera_id: int,
@@ -354,6 +386,7 @@ def start_camera_thread(
     model_path: Optional[str] = None,
     use_default_model: bool = True,
     model_paths: Optional[list[str]] = None,
+    violation_check_interval: float = 600.0,
 ):
     """Start a blocking camera loop in a separate thread."""
     resolved_model_paths = [path for path in (model_paths or []) if path]
@@ -401,7 +434,7 @@ def start_camera_thread(
     stop_event = threading.Event()
     thread = threading.Thread(
         target=run_camera_thread,
-        args=(camera_id, rtsp_url, resolved_model_paths, main_loop, violation_queue, stop_event),
+        args=(camera_id, rtsp_url, resolved_model_paths, main_loop, violation_queue, stop_event, False, violation_check_interval),
         daemon=True
     )
     camera_threads[camera_id] = {
@@ -430,7 +463,8 @@ async def ensure_company_cameras_started(db: AsyncSession, company_id: int, trig
             camera_threads.pop(cam.id, None)
 
         model_paths = await get_active_model_paths_for_camera(db, cam.company_id, cam.id)
-        start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
+        interval = await get_violation_check_interval_for_camera(db, cam.company_id, cam.id)
+        start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths, violation_check_interval=interval)
         started_count += 1
 
     print(
@@ -1017,11 +1051,13 @@ async def create_camera(
 
     # Start the newly added camera immediately for the active company session.
     model_paths = await get_active_model_paths_for_camera(db, company.id, new_camera.id)
+    interval = await get_violation_check_interval_for_camera(db, company.id, new_camera.id)
     start_camera_thread(
         new_camera.id,
         new_camera.rtsp_url,
         model_paths=model_paths,
         use_default_model=not model_paths,
+        violation_check_interval=interval,
     )
 
     active_models = await get_camera_active_models(db, company.id, new_camera.id)
@@ -1277,7 +1313,8 @@ async def api_start_local_camera(
         # Use "0" for local camera
         print(f"[api_start_local_camera] Starting local camera for camera_id={camera_id}")
         model_paths = await get_active_model_paths_for_camera(session, cam.company_id, cam.id)
-        start_camera_thread(cam.id, "0", model_paths=model_paths, use_default_model=not model_paths)
+        interval = await get_violation_check_interval_for_camera(session, cam.company_id, cam.id)
+        start_camera_thread(cam.id, "0", model_paths=model_paths, use_default_model=not model_paths, violation_check_interval=interval)
     return {"status": "started with local camera", "camera_id": camera_id}
 
 
@@ -1694,18 +1731,43 @@ async def get_company_model_cameras(
     )
     active_model_ids = set(active_model_ids_result.scalars().all())
 
+    # model_id verilmişse, her kamera için priority ve assignment_id bilgisini getir
+    priority_by_camera = {}
+    if model_id is not None:
+        assignments_result = await db.execute(
+            select(
+                models.CompanyModelCamera.camera_id,
+                models.CompanyModelCamera.priority,
+                models.CompanyModelCamera.id,
+            )
+            .where(
+                (models.CompanyModelCamera.company_id == company.id) &
+                (models.CompanyModelCamera.model_id == model_id)
+            )
+        )
+        for row in assignments_result:
+            priority_by_camera[row.camera_id] = {
+                "priority": str(row.priority) if row.priority else "medium",
+                "assignment_id": row.id,
+            }
+
     response = []
     for cam in cameras:
         active_models = await get_camera_active_models(db, company.id, cam.id)
         active_model_id_set = {active_model["id"] for active_model in active_models}
         selected_model_is_active = (model_id in active_model_id_set) if model_id is not None else bool(active_model_id_set)
-        response.append(
-            camera_to_dict(
-                cam,
-                active_models=active_models,
-                model_is_active=selected_model_is_active,
-            )
+        cam_dict = camera_to_dict(
+            cam,
+            active_models=active_models,
+            model_is_active=selected_model_is_active,
         )
+        if model_id is not None and cam.id in priority_by_camera:
+            cam_dict["priority"] = priority_by_camera[cam.id]["priority"]
+            cam_dict["assignment_id"] = priority_by_camera[cam.id]["assignment_id"]
+        elif model_id is not None:
+            cam_dict["priority"] = "medium"
+            cam_dict["assignment_id"] = None
+        response.append(cam_dict)
     return response
 
 
@@ -1721,6 +1783,8 @@ async def set_company_model_cameras(
 
     model_id = payload.get("model_id") if isinstance(payload, dict) else None
     camera_ids = payload.get("camera_ids", []) if isinstance(payload, dict) else []
+    # { "camera_id_str": "high" } — opsiyonel, gönderilmezse mevcut priority korunur
+    camera_priorities: dict = payload.get("camera_priorities", {}) if isinstance(payload, dict) else {}
 
     if model_id is None:
         raise HTTPException(status_code=400, detail="model_id zorunludur")
@@ -1766,9 +1830,12 @@ async def set_company_model_cameras(
     for camera_id in valid_camera_ids:
         should_be_active = camera_id in normalized_camera_ids
         assignment = assignments_by_camera.get(camera_id)
+        new_priority = camera_priorities.get(str(camera_id))
 
         if assignment:
             assignment.is_active = should_be_active
+            if new_priority and new_priority in PRIORITY_INTERVALS:
+                assignment.priority = new_priority
         elif should_be_active:
             db.add(
                 models.CompanyModelCamera(
@@ -1776,6 +1843,7 @@ async def set_company_model_cameras(
                     camera_id=camera_id,
                     model_id=int(model_id),
                     is_active=True,
+                    priority=new_priority if new_priority and new_priority in PRIORITY_INTERVALS else "medium",
                 )
             )
 
@@ -1790,6 +1858,59 @@ async def set_company_model_cameras(
         "selected_camera_count": len(normalized_camera_ids),
         "note": "Camera-level model mapping applied. Multiple models can run on the same camera."
     }
+
+# ===== Priority Endpoint =====
+
+@app.patch("/api/company/{company_code}/model-cameras/{assignment_id}/priority")
+async def update_camera_model_priority(
+    company_code: str,
+    assignment_id: int,
+    payload: dict,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Kamera-model atamasının önceliğini günceller. Admin ve user kullanabilir."""
+    await verify_company_access(current_user, company_code)
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Şirket bulunamadı")
+
+    priority = payload.get("priority")
+    if priority not in PRIORITY_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Geçersiz öncelik. Geçerli değerler: {list(PRIORITY_INTERVALS.keys())}"
+        )
+
+    assignment_result = await db.execute(
+        select(models.CompanyModelCamera).where(
+            (models.CompanyModelCamera.id == assignment_id) &
+            (models.CompanyModelCamera.company_id == company.id)
+        )
+    )
+    assignment = assignment_result.scalar_one_or_none()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Kamera-model ataması bulunamadı")
+
+    assignment.priority = priority
+    await db.commit()
+
+    # Kamera çalışıyorsa yeni interval ile yeniden başlat
+    camera = await db.get(models.Camera, assignment.camera_id)
+    if camera and assignment.camera_id in camera_threads:
+        await restart_camera_with_current_models(db, camera)
+
+    return {
+        "status": "success",
+        "assignment_id": assignment_id,
+        "priority": priority,
+        "interval_seconds": PRIORITY_INTERVALS[priority],
+    }
+
 
 # ===== Company Model Management Endpoints =====
 

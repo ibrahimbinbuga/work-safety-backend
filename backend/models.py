@@ -11,6 +11,13 @@ class RoleEnum(str, enum.Enum):
     admin = "admin"
     user = "user"
 
+# Priority Enum - detection kayıt sıklığını belirler
+class PriorityEnum(str, enum.Enum):
+    critical = "critical"   # 30 sn
+    high = "high"           # 2 dk
+    medium = "medium"       # 10 dk
+    low = "low"             # 30 dk
+
 # 1. Şirket Tablosu
 class Company(Base):
     __tablename__ = "companies"
@@ -135,6 +142,7 @@ class CompanyModelCamera(Base):
     model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
     is_active = Column(Boolean, default=False, nullable=False)
     enabled_at = Column(DateTime(timezone=True), server_default=func.now())
+    priority = Column(Enum(PriorityEnum), default=PriorityEnum.medium, nullable=False, server_default="medium")
 
     company = relationship("Company")
     camera = relationship("Camera", back_populates="model_assignments")
