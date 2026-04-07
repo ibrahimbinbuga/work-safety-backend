@@ -17,6 +17,14 @@ MODEL_PATH = os.getenv("MODEL_PATH") or str(_backend_dir.parent / "model" / "wei
 
 ACTIVE_MODEL_PATH: Optional[str] = MODEL_PATH
 
+# Priority → violation kayıt aralığı (saniye)
+PRIORITY_INTERVALS: dict = {
+    "critical": 30.0,
+    "high": 120.0,
+    "medium": 600.0,
+    "low": 1800.0,
+}
+
 
 def set_active_model_path(path: str):
     global ACTIVE_MODEL_PATH
@@ -97,6 +105,24 @@ async def get_active_model_paths_for_camera(
 ) -> list[str]:
     active_models = await get_camera_active_models(db, company_id, camera_id)
     return [m["path"] for m in active_models if m.get("path")]
+
+
+async def get_violation_check_interval_for_camera(
+    db: AsyncSession, company_id: int, camera_id: int
+) -> float:
+    """Kameranın aktif model atamalarındaki en yüksek önceliğe göre violation kayıt aralığını döndürür."""
+    result = await db.execute(
+        select(models.CompanyModelCamera.priority)
+        .where(
+            (models.CompanyModelCamera.company_id == company_id)
+            & (models.CompanyModelCamera.camera_id == camera_id)
+            & (models.CompanyModelCamera.is_active == True)
+        )
+    )
+    priorities = [str(p) for p in result.scalars().all() if p]
+    if not priorities:
+        return PRIORITY_INTERVALS["medium"]
+    return min(PRIORITY_INTERVALS.get(p, PRIORITY_INTERVALS["medium"]) for p in priorities)
 
 
 async def get_active_model_path_for_camera(
@@ -220,4 +246,11 @@ async def ensure_company_model_cameras_schema():
 
         await conn.execute(text(
             "UPDATE company_model_cameras SET is_active = FALSE WHERE is_active IS NULL"
+        ))
+
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS company_model_cameras ADD COLUMN IF NOT EXISTS priority VARCHAR DEFAULT 'medium'"
+        ))
+        await conn.execute(text(
+            "UPDATE company_model_cameras SET priority = 'medium' WHERE priority IS NULL"
         ))

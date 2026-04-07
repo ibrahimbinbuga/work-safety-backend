@@ -27,7 +27,10 @@ from services.model_service import (
     set_active_model_path,
     get_active_model_path,
     sync_company_model_activation_summary,
+    PRIORITY_INTERVALS,
+    get_violation_check_interval_for_camera,
 )
+from services.camera_service import restart_camera_with_current_models as _restart_camera
 
 router = APIRouter()
 
@@ -251,12 +254,39 @@ async def get_company_model_cameras(
         select(models.Camera).where(models.Camera.company_id == company.id)
     )
 
+    # model_id verilmişse her kamera için priority ve assignment_id bilgisini getir
+    priority_by_camera = {}
+    if model_id is not None:
+        assignments_result = await db.execute(
+            select(
+                models.CompanyModelCamera.camera_id,
+                models.CompanyModelCamera.priority,
+                models.CompanyModelCamera.id,
+            )
+            .where(
+                (models.CompanyModelCamera.company_id == company.id)
+                & (models.CompanyModelCamera.model_id == model_id)
+            )
+        )
+        for row in assignments_result:
+            priority_by_camera[row.camera_id] = {
+                "priority": str(row.priority) if row.priority else "medium",
+                "assignment_id": row.id,
+            }
+
     response = []
     for cam in cameras_result.scalars().all():
         active_models = await get_camera_active_models(db, company.id, cam.id)
         active_ids = {m["id"] for m in active_models}
         is_active = (model_id in active_ids) if model_id is not None else bool(active_ids)
-        response.append(camera_to_dict(cam, active_models=active_models, model_is_active=is_active))
+        cam_dict = camera_to_dict(cam, active_models=active_models, model_is_active=is_active)
+        if model_id is not None and cam.id in priority_by_camera:
+            cam_dict["priority"] = priority_by_camera[cam.id]["priority"]
+            cam_dict["assignment_id"] = priority_by_camera[cam.id]["assignment_id"]
+        elif model_id is not None:
+            cam_dict["priority"] = "medium"
+            cam_dict["assignment_id"] = None
+        response.append(cam_dict)
     return response
 
 
@@ -272,6 +302,7 @@ async def set_company_model_cameras(
 
     model_id = payload.get("model_id") if isinstance(payload, dict) else None
     camera_ids = payload.get("camera_ids", []) if isinstance(payload, dict) else []
+    camera_priorities: dict = payload.get("camera_priorities", {}) if isinstance(payload, dict) else {}
 
     if model_id is None:
         raise HTTPException(status_code=400, detail="model_id zorunludur")
@@ -315,11 +346,18 @@ async def set_company_model_cameras(
     for cam_id in valid_cam_ids:
         should_be_active = cam_id in normalized_cam_ids
         assignment = assignments_by_camera.get(cam_id)
+        new_priority = camera_priorities.get(str(cam_id))
         if assignment:
             assignment.is_active = should_be_active
+            if new_priority and new_priority in PRIORITY_INTERVALS:
+                assignment.priority = new_priority
         elif should_be_active:
             db.add(models.CompanyModelCamera(
-                company_id=company.id, camera_id=cam_id, model_id=int(model_id), is_active=True
+                company_id=company.id,
+                camera_id=cam_id,
+                model_id=int(model_id),
+                is_active=True,
+                priority=new_priority if new_priority and new_priority in PRIORITY_INTERVALS else "medium",
             ))
 
     await sync_company_model_activation_summary(db, company.id)
@@ -539,6 +577,62 @@ async def deactivate_model_for_company(
         await db.rollback()
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Model deaktivasyonu hatasi: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Priority endpoint
+# ---------------------------------------------------------------------------
+
+@router.patch("/api/company/{company_code}/model-cameras/{assignment_id}/priority")
+async def update_camera_model_priority(
+    company_code: str,
+    assignment_id: int,
+    payload: dict,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Kamera-model atamasının önceliğini günceller. Admin ve user kullanabilir."""
+    await verify_company_access(current_user, company_code)
+
+    company_result = await db.execute(
+        select(models.Company).where(func.upper(models.Company.code) == func.upper(company_code))
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Sirket bulunamadi")
+
+    priority = payload.get("priority")
+    if priority not in PRIORITY_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Gecersiz oncelik. Gecerli degerler: {list(PRIORITY_INTERVALS.keys())}",
+        )
+
+    assignment_result = await db.execute(
+        select(models.CompanyModelCamera).where(
+            (models.CompanyModelCamera.id == assignment_id)
+            & (models.CompanyModelCamera.company_id == company.id)
+        )
+    )
+    assignment = assignment_result.scalar_one_or_none()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Kamera-model ataması bulunamadi")
+
+    assignment.priority = priority
+    await db.commit()
+
+    # Kamera çalışıyorsa yeni interval ile yeniden başlat
+    import globals as g
+    camera = await db.get(models.Camera, assignment.camera_id)
+    if camera and assignment.camera_id in g.camera_threads:
+        await _restart_camera(db, camera)
+
+    return {
+        "status": "success",
+        "assignment_id": assignment_id,
+        "priority": priority,
+        "interval_seconds": PRIORITY_INTERVALS[priority],
+    }
 
 
 # ---------------------------------------------------------------------------

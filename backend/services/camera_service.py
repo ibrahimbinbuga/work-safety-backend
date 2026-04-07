@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import globals as g
 import models
 from camera_runner import run_camera_thread, get_latest_frame
-from services.model_service import get_active_model_paths_for_camera, get_camera_active_models
+from services.model_service import (
+    get_active_model_paths_for_camera,
+    get_camera_active_models,
+    get_violation_check_interval_for_camera,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +70,7 @@ def start_camera_thread(
     model_path: Optional[str] = None,
     use_default_model: bool = True,
     model_paths: Optional[list[str]] = None,
+    violation_check_interval: float = 600.0,
 ):
     """Spawn a background thread for a camera. No-op if already running."""
     resolved = [p for p in (model_paths or []) if p]
@@ -103,12 +108,12 @@ def start_camera_thread(
 
     print(
         f"[start_camera_thread] Creating thread for camera {camera_id} "
-        f"rtsp_url='{rtsp_url}' model_paths='{resolved}'"
+        f"rtsp_url='{rtsp_url}' model_paths='{resolved}' interval={violation_check_interval}s"
     )
     stop_event = threading.Event()
     thread = threading.Thread(
         target=run_camera_thread,
-        args=(camera_id, rtsp_url, resolved, g.main_loop, g.violation_queue, stop_event),
+        args=(camera_id, rtsp_url, resolved, g.main_loop, g.violation_queue, stop_event, False, violation_check_interval),
         daemon=True,
     )
     g.camera_threads[camera_id] = {
@@ -139,8 +144,9 @@ async def restart_camera_with_current_models(
 ):
     stop_camera_thread(camera.id)
     model_paths = await get_active_model_paths_for_camera(db, camera.company_id, camera.id)
+    interval = await get_violation_check_interval_for_camera(db, camera.company_id, camera.id)
     source = "0" if force_local else camera.rtsp_url
-    start_camera_thread(camera.id, source, model_paths=model_paths, use_default_model=not model_paths)
+    start_camera_thread(camera.id, source, model_paths=model_paths, use_default_model=not model_paths, violation_check_interval=interval)
 
 
 async def restart_company_cameras(db: AsyncSession, company_id: int):
@@ -166,7 +172,8 @@ async def ensure_company_cameras_started(
                 continue
             g.camera_threads.pop(cam.id, None)
         model_paths = await get_active_model_paths_for_camera(db, cam.company_id, cam.id)
-        start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths)
+        interval = await get_violation_check_interval_for_camera(db, cam.company_id, cam.id)
+        start_camera_thread(cam.id, cam.rtsp_url, model_paths=model_paths, use_default_model=not model_paths, violation_check_interval=interval)
         started_count += 1
     
     if started_count > 0:
