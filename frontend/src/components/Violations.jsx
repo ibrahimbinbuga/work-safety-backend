@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, CheckCircle, Clock } from 'lucide-react';
+import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, Clock, PersonStanding } from 'lucide-react';
 import { apiClient, addCompanyCodeToUrl } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -28,66 +28,58 @@ const getTimestampMs = (raw) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-// Şimdilik statik veri (İleride Backend'den çekilecek)
-/*const initialViolations = [
-  {
-    id: 'V-2025-1247',
-    workerName: 'Worker #A342',
-    camera: 'Warehouse A - Entry',
-    type: 'helmet',
-    timestamp: '2025-11-18 14:23:45',
-    severity: 'high',
-    status: 'pending',
+// İhlal tipi görsel tanımları
+const VIOLATION_TYPE_CONFIG = {
+  head: {
+    label: 'No Helmet',
+    badge: 'bg-red-50 text-red-700 border-red-100',
+    icon: HardHat,
+    category: 'ppe',
   },
-  {
-    id: 'V-2025-1246',
-    workerName: 'Worker #B128',
-    camera: 'Construction Zone 3',
-    type: 'vest',
-    timestamp: '2025-11-18 14:15:22',
-    severity: 'medium',
-    status: 'reviewed',
+  vest: {
+    label: 'No Vest',
+    badge: 'bg-orange-50 text-orange-700 border-orange-100',
+    icon: Shirt,
+    category: 'ppe',
   },
-  {
-    id: 'V-2025-1245',
-    workerName: 'Worker #C567',
-    camera: 'Manufacturing Floor',
-    type: 'helmet',
-    timestamp: '2025-11-18 13:58:11',
-    severity: 'high',
-    status: 'resolved',
+  fallen: {
+    label: 'Fall Detected',
+    badge: 'bg-purple-50 text-purple-700 border-purple-100',
+    icon: AlertTriangle,
+    category: 'fall',
   },
-  {
-    id: 'V-2025-1244',
-    workerName: 'Worker #D891',
-    camera: 'Loading Dock - North',
-    type: 'both',
-    timestamp: '2025-11-18 13:42:03',
-    severity: 'critical',
-    status: 'pending',
+  sitting: {
+    label: 'Sitting',
+    badge: 'bg-blue-50 text-blue-700 border-blue-100',
+    icon: PersonStanding,
+    category: 'posture',
   },
-  {
-    id: 'V-2025-1243',
-    workerName: 'Worker #E234',
-    camera: 'Assembly Line 1',
-    type: 'vest',
-    timestamp: '2025-11-18 13:20:55',
-    severity: 'medium',
-    status: 'reviewed',
+  standing: {
+    label: 'Standing',
+    badge: 'bg-gray-50 text-gray-600 border-gray-200',
+    icon: PersonStanding,
+    category: 'posture',
   },
-  {
-    id: 'V-2025-1242',
-    workerName: 'Worker #F678',
-    camera: 'Storage Area B',
-    type: 'helmet',
-    timestamp: '2025-11-18 12:55:34',
-    severity: 'high',
-    status: 'resolved',
-  },
-];*/
+};
 
-
-
+function ViolationTypeBadge({ type }) {
+  const config = VIOLATION_TYPE_CONFIG[type];
+  if (!config) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200 capitalize">
+        <AlertTriangle className="w-3 h-3" />
+        {type}
+      </span>
+    );
+  }
+  const Icon = config.icon;
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${config.badge}`}>
+      <Icon className="w-3 h-3" />
+      {config.label}
+    </span>
+  );
+}
 
 const statusOptions = [
   { value: 'pending',  label: 'Pending',  classes: 'bg-blue-50 text-blue-700 border-blue-100' },
@@ -151,74 +143,63 @@ export function Violations() {
   const fetchViolations = async () => {
     setIsLoading(true);
     try {
-      const violationsUrl = addCompanyCodeToUrl('/api/violations', activeCompanyCode);
-      const response = await apiClient.get(violationsUrl);
+      const url = addCompanyCodeToUrl('/api/violations', activeCompanyCode);
+      const response = await apiClient.get(url);
 
       const processed = response.data.map(v => ({
         id: v.id,
-        workerName: "Unknown Worker",
+        workerId: v.violation_id,
         camera: v.ihlal_yapilan_bolge,
         type: v.ihlal_cesidi,
         timestamp: v.tarih_saat,
-        severity: "high",
-        status: v.review_status || 'pending'
+        status: v.review_status || 'pending',
       }));
 
       setViolations(processed);
     } catch (error) {
-      console.error("Violations fetch error:", error);
+      console.error('Violations fetch error:', error);
     } finally {
       setIsLoading(false);
     }
   };
+
   const updateStatus = async (violationId, newStatus) => {
-    // Optimistic update: change UI immediately, rollback on error
-    const previousViolations = [...violations];
-    setViolations(prev =>
-      prev.map(v => v.id === violationId ? { ...v, status: newStatus } : v)
-    );
+    const previous = [...violations];
+    setViolations(prev => prev.map(v => v.id === violationId ? { ...v, status: newStatus } : v));
     try {
       await apiClient.patch(`/api/violations/${violationId}/status`, { review_status: newStatus });
     } catch (error) {
       console.error('Status update error:', error);
-      setViolations(previousViolations); // rollback
+      setViolations(previous);
     }
   };
-  // Filtreleme Mantığı
-  const filteredViolations = violations.filter(v => {
-    const typeMatch = filterType === 'all' || (filterType === 'helmet' && v.type === 'head') || v.type === filterType;
-    const statusMatch = filterStatus === 'all' || v.status === filterStatus;
-    const timestampMs = getTimestampMs(v.timestamp);
 
+  const filteredViolations = violations.filter(v => {
+    const typeMatch = filterType === 'all' || v.type === filterType;
+    const statusMatch = filterStatus === 'all' || v.status === filterStatus;
+    const tsMs = getTimestampMs(v.timestamp);
     const fromMs = filterDateFrom ? new Date(`${filterDateFrom}T00:00:00`).getTime() : null;
     const toMs = filterDateTo ? new Date(`${filterDateTo}T23:59:59.999`).getTime() : null;
-
-    const dateFromMatch = fromMs === null || timestampMs >= fromMs;
-    const dateToMatch = toMs === null || timestampMs <= toMs;
-
-    return typeMatch && statusMatch && dateFromMatch && dateToMatch;
+    return typeMatch && statusMatch && (fromMs === null || tsMs >= fromMs) && (toMs === null || tsMs <= toMs);
   });
 
-  const filteredAndSortedViolations = [...filteredViolations].sort((a, b) => {
-    const aMs = getTimestampMs(a.timestamp);
-    const bMs = getTimestampMs(b.timestamp);
-    return sortByDate === 'oldest' ? aMs - bMs : bMs - aMs;
+  const filteredAndSorted = [...filteredViolations].sort((a, b) => {
+    const diff = getTimestampMs(a.timestamp) - getTimestampMs(b.timestamp);
+    return sortByDate === 'oldest' ? diff : -diff;
   });
 
-  // İstatistikleri hesapla
   const stats = {
     total: violations.length,
-    head: violations.filter(v => v.type === 'head').length,
-    vest: violations.filter(v => v.type === 'vest').length,
-    pending: violations.filter(v => v.status === 'pending').length
+    ppe: violations.filter(v => v.type === 'head' || v.type === 'vest').length,
+    fall: violations.filter(v => v.type === 'fallen').length,
+    pending: violations.filter(v => v.status === 'pending').length,
   };
 
-  // Admin control - must select a company before viewing violations
   if (isAdmin && !activeCompanyCode) {
     return (
       <div className="space-y-6 p-6">
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
-          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
+          <p className="text-amber-900 text-lg font-semibold">Please select a company from the sidebar.</p>
         </div>
       </div>
     );
@@ -235,49 +216,50 @@ export function Violations() {
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex justify-between items-start">
-            <div>
-                <p className="text-gray-500 text-sm font-medium">Total Today</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.total}</h3>
-            </div>
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600">
-                <AlertTriangle className="w-6 h-6" />
-            </div>
+          <div>
+            <p className="text-gray-500 text-sm font-medium">Total Violations</p>
+            <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.total}</h3>
+          </div>
+          <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
         </div>
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex justify-between items-start">
-            <div>
-                <p className="text-gray-500 text-sm font-medium">Helmet Violations</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.head}</h3>
-            </div>
-            <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center text-red-600">
-                <HardHat className="w-6 h-6" />
-            </div>
+          <div>
+            <p className="text-gray-500 text-sm font-medium">PPE Violations</p>
+            <p className="text-xs text-gray-400 mt-0.5">No Helmet / No Vest</p>
+            <h3 className="text-3xl font-bold text-gray-900 mt-1">{stats.ppe}</h3>
+          </div>
+          <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center text-red-600">
+            <HardHat className="w-6 h-6" />
+          </div>
         </div>
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex justify-between items-start">
-            <div>
-                <p className="text-gray-500 text-sm font-medium">Vest Violations</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.vest}</h3>
-            </div>
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600">
-                <Shirt className="w-6 h-6" />
-            </div>
+          <div>
+            <p className="text-gray-500 text-sm font-medium">Fall Detections</p>
+            <p className="text-xs text-gray-400 mt-0.5">Fallen workers</p>
+            <h3 className="text-3xl font-bold text-gray-900 mt-1">{stats.fall}</h3>
+          </div>
+          <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center text-purple-600">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
         </div>
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex justify-between items-start">
-            <div>
-                <p className="text-gray-500 text-sm font-medium">Pending Review</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.pending}</h3>
-            </div>
-            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
-                <Clock className="w-6 h-6" />
-            </div>
+          <div>
+            <p className="text-gray-500 text-sm font-medium">Pending Review</p>
+            <h3 className="text-3xl font-bold text-gray-900 mt-2">{stats.pending}</h3>
+          </div>
+          <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
+            <Clock className="w-6 h-6" />
+          </div>
         </div>
       </div>
 
-      {/* Filters and Table Container */}
+      {/* Filters and Table */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        {/* Table Header & Filters */}
         <div className="p-6 border-b border-gray-100 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-lg font-bold text-gray-900">Violation Records</h3>
@@ -297,6 +279,7 @@ export function Violations() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            {/* Type filter */}
             <div className="space-y-1">
               <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Type</label>
               <div className="relative">
@@ -306,14 +289,21 @@ export function Violations() {
                   className="w-full appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
                   <option value="all">All Types</option>
-                  <option value="head">Helmet</option>
-                  <option value="vest">Vest</option>
-                  <option value="both">Both</option>
+                  <optgroup label="PPE Model">
+                    <option value="head">No Helmet</option>
+                    <option value="vest">No Vest</option>
+                  </optgroup>
+                  <optgroup label="Fall Detection Model">
+                    <option value="fallen">Fall Detected</option>
+                    <option value="sitting">Sitting</option>
+                    <option value="standing">Standing</option>
+                  </optgroup>
                 </select>
                 <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2.5 top-3 pointer-events-none" />
               </div>
             </div>
 
+            {/* Status filter */}
             <div className="space-y-1">
               <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</label>
               <div className="relative">
@@ -331,6 +321,7 @@ export function Violations() {
               </div>
             </div>
 
+            {/* From date */}
             <div className="space-y-1">
               <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">From Date</label>
               <input
@@ -338,10 +329,10 @@ export function Violations() {
                 value={filterDateFrom}
                 onChange={(e) => setFilterDateFrom(e.target.value)}
                 className="w-full bg-white border border-gray-300 text-gray-700 py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                title="From date"
               />
             </div>
 
+            {/* To date */}
             <div className="space-y-1">
               <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">To Date</label>
               <input
@@ -349,10 +340,10 @@ export function Violations() {
                 value={filterDateTo}
                 onChange={(e) => setFilterDateTo(e.target.value)}
                 className="w-full bg-white border border-gray-300 text-gray-700 py-2 px-3 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                title="To date"
               />
             </div>
 
+            {/* Sort */}
             <div className="space-y-1">
               <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Sort By Date</label>
               <div className="relative">
@@ -375,64 +366,41 @@ export function Violations() {
           <table className="w-full text-left border-collapse">
             <thead className="bg-gray-50/50">
               <tr>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Violation ID</th>
+                <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">ID</th>
                 <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Worker</th>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Camera</th>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
+                <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Camera / Zone</th>
+                <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Violation Type</th>
                 <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Timestamp</th>
-                <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Severity</th>
                 <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                 <th className="p-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filteredAndSortedViolations.map((violation) => (
+              {filteredAndSorted.map((violation) => (
                 <tr key={violation.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="p-4 text-sm font-medium text-blue-600">{violation.id}</td>
+                  <td className="p-4 text-sm font-medium text-blue-600">#{violation.id}</td>
                   <td className="p-4">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
                       <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-xs font-bold text-gray-600">
-                        {violation.workerName.split('#')[1]?.substring(0, 2)}
+                        {violation.workerId ?? '?'}
                       </div>
-                      <span className="text-sm text-gray-900 font-medium">{violation.workerName}</span>
+                      <span className="text-sm text-gray-700">Worker #{violation.workerId ?? '-'}</span>
                     </div>
                   </td>
                   <td className="p-4">
                     <div className="flex items-center gap-2 text-gray-600">
-                      <Camera className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm">{violation.camera}</span>
+                      <Camera className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      <span className="text-sm">{violation.camera || '-'}</span>
                     </div>
                   </td>
                   <td className="p-4">
-                    {violation.type === 'head' && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-100">
-                        <HardHat className="w-3 h-3" /> Helmet
-                      </span>
-                    )}
-                    {violation.type === 'vest' && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-700 border border-orange-100">
-                        <Shirt className="w-3 h-3" /> Vest
-                      </span>
-                    )}
-                    {violation.type === 'both' && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-100">
-                        <AlertTriangle className="w-3 h-3" /> Both
-                      </span>
-                    )}
+                    <ViolationTypeBadge type={violation.type} />
                   </td>
                   <td className="p-4">
                     <div className="flex items-center gap-2 text-gray-500">
-                      <Calendar className="w-4 h-4" />
+                      <Calendar className="w-4 h-4 flex-shrink-0" />
                       <span className="text-sm">{formatTurkishDate(violation.timestamp)}</span>
                     </div>
-                  </td>
-                  <td className="p-4">
-                    <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium capitalize
-                      ${violation.severity === 'critical' ? 'bg-red-100 text-red-700' : 
-                        violation.severity === 'high' ? 'bg-orange-100 text-orange-700' : 
-                        'bg-yellow-100 text-yellow-700'}`}>
-                      {violation.severity}
-                    </span>
                   </td>
                   <td className="p-4">
                     <StatusDropdown
@@ -451,17 +419,17 @@ export function Violations() {
               ))}
             </tbody>
           </table>
-          
-            {isLoading && (
-              <div className="text-center py-10 text-gray-500">
-                <p>Loading violations...</p>
-              </div>
-            )}
 
-            {!isLoading && filteredAndSortedViolations.length === 0 && (
-              <div className="text-center py-10 text-gray-500">
-                  <p>No violations found matching the filters.</p>
-              </div>
+          {isLoading && (
+            <div className="text-center py-10 text-gray-500">
+              <p>Loading violations...</p>
+            </div>
+          )}
+
+          {!isLoading && filteredAndSorted.length === 0 && (
+            <div className="text-center py-10 text-gray-500">
+              <p>No violations found matching the filters.</p>
+            </div>
           )}
         </div>
       </div>
