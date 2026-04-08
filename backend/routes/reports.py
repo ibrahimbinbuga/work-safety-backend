@@ -72,6 +72,75 @@ def _build_filters(
 
 
 # ---------------------------------------------------------------------------
+# Active violation types for a company (based on assigned models)
+# ---------------------------------------------------------------------------
+
+# Maps violation types to their model group label
+_TYPE_TO_MODEL_GROUP = {
+    "head":   "PPE Model",
+    "vest":   "PPE Model",
+    "fallen": "Fall Detection Model",
+}
+
+
+def _model_path_to_types(path: str) -> list[str]:
+    """Infer applicable violation types from a model file path.
+
+    Convention used in this project:
+      - fall_model/... or any path containing 'fall' → Fall Detection
+      - everything else                              → PPE (head + vest)
+    """
+    if "fall" in path.lower():
+        return ["fallen"]
+    return ["head", "vest"]
+
+
+@router.get("/api/company/{company_code}/reports/active-types")
+async def get_active_violation_types(
+    company_code: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the violation types that are relevant for this company
+    based on which models are currently assigned (is_active=True)."""
+    await verify_company_access(current_user, company_code)
+    company = await _get_company(db, company_code)
+
+    result = await db.execute(
+        select(models.ModelMeta)
+        .join(models.CompanyModel, models.CompanyModel.model_id == models.ModelMeta.id)
+        .where(
+            models.CompanyModel.company_id == company.id,
+            models.CompanyModel.is_active == True,
+        )
+    )
+    assigned_models = result.scalars().all()
+
+    active_types: list[str] = []
+    for m in assigned_models:
+        for t in _model_path_to_types(m.path or ""):
+            if t not in active_types:
+                active_types.append(t)
+
+    # Fallback: if no models assigned yet, return all types so UI isn't empty
+    if not active_types:
+        active_types = ["head", "vest", "fallen"]
+
+    return {
+        "types": active_types,
+        "groups": [
+            {
+                "label": group_label,
+                "types": [t for t in active_types if _TYPE_TO_MODEL_GROUP.get(t) == group_label],
+            }
+            for group_label in dict.fromkeys(
+                _TYPE_TO_MODEL_GROUP[t] for t in active_types if t in _TYPE_TO_MODEL_GROUP
+            )
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Report data endpoint
 # ---------------------------------------------------------------------------
 

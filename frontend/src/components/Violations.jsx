@@ -123,10 +123,27 @@ export function Violations() {
   const [sortByDate, setSortByDate] = useState('newest');
   const [violations, setViolations] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  // Dynamic type groups based on assigned models
+  const [activeTypeGroups, setActiveTypeGroups] = useState([]);
 
   useEffect(() => {
     fetchViolations();
+    fetchActiveTypes();
   }, [activeCompanyCode]);
+
+  const fetchActiveTypes = async () => {
+    if (!activeCompanyCode) return;
+    try {
+      const res = await apiClient.get(`/api/company/${activeCompanyCode}/reports/active-types`);
+      setActiveTypeGroups(res.data.groups || []);
+    } catch {
+      // fallback: show all types
+      setActiveTypeGroups([
+        { label: 'PPE Model', types: ['head', 'vest'] },
+        { label: 'Fall Detection Model', types: ['fallen'] },
+      ]);
+    }
+  };
 
   const fetchViolations = async () => {
     setIsLoading(true);
@@ -277,13 +294,13 @@ export function Violations() {
                   className="w-full appearance-none bg-white border border-gray-300 text-gray-700 py-2 pl-3 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
                   <option value="all">All Types</option>
-                  <optgroup label="PPE Model">
-                    <option value="head">No Helmet</option>
-                    <option value="vest">No Vest</option>
-                  </optgroup>
-                  <optgroup label="Fall Detection Model">
-                    <option value="fallen">Fall Detected</option>
-                  </optgroup>
+                  {activeTypeGroups.map(group => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.types.includes('head')   && <option value="head">No Helmet</option>}
+                      {group.types.includes('vest')   && <option value="vest">No Vest</option>}
+                      {group.types.includes('fallen') && <option value="fallen">Fall Detected</option>}
+                    </optgroup>
+                  ))}
                 </select>
                 <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2.5 top-3 pointer-events-none" />
               </div>
