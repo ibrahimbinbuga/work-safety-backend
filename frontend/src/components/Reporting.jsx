@@ -341,37 +341,51 @@ export function Reporting() {
       const { default: autoTable } = await import('jspdf-autotable');
 
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-      const pageW = doc.internal.pageSize.getWidth();
-      const pageH = doc.internal.pageSize.getHeight();
-      const margin = 14;
+      const pageW = doc.internal.pageSize.getWidth();   // 210
+      const pageH = doc.internal.pageSize.getHeight();  // 297
+      const margin = 18;   // equal left & right margin for centering
+      const contentW = pageW - margin * 2;              // 174 mm usable width
+      const cx = pageW / 2;                             // horizontal centre
 
-      // ---- Header ----
+      // ASCII-safe date/time strings — avoid Unicode chars that break jsPDF encoding
+      const now = new Date();
+      const generatedStr = now.toLocaleString('tr-TR'); // "08.04.2026 14:23:45"
+      const periodStr = `${fromDate} - ${toDate}`;      // plain hyphen, not arrow
+
+      // ---- Header band ----
       doc.setFillColor(30, 58, 95);
-      doc.rect(0, 0, pageW, 28, 'F');
+      doc.rect(0, 0, pageW, 34, 'F');
+
+      // Title — centred
       doc.setTextColor(255, 255, 255);
-      doc.setFontSize(16);
+      doc.setFontSize(17);
       doc.setFont('helvetica', 'bold');
-      doc.text('Safety Violations Report', margin, 12);
+      doc.text('Safety Violations Report', cx, 12, { align: 'center' });
+
+      // Company + generated time on one line, centred
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
-      doc.text(`Company: ${activeCompanyCode?.toUpperCase()}`, margin, 20);
       doc.text(
-        `Period: ${fromDate} → ${toDate}   |   Generated: ${new Date().toLocaleString('tr-TR')}`,
-        margin, 25,
+        `Company: ${activeCompanyCode?.toUpperCase()}   |   Generated: ${generatedStr}`,
+        cx, 21, { align: 'center' },
       );
 
-      // ---- Summary cards ----
+      // Period on next line, centred
+      doc.text(`Period: ${periodStr}`, cx, 28, { align: 'center' });
+
+      // ---- Summary cards (5 equal boxes, centred row) ----
       const s = reportData.summary;
       const cards = [
         { label: 'Total Violations', value: String(s.total) },
-        { label: 'No Helmet', value: String(s.by_type?.head || 0) },
-        { label: 'No Vest', value: String(s.by_type?.vest || 0) },
-        { label: 'Fall Detected', value: String(s.by_type?.fallen || 0) },
-        { label: 'Pending Review', value: String(s.pending || 0) },
+        { label: 'No Helmet',        value: String(s.by_type?.head   || 0) },
+        { label: 'No Vest',          value: String(s.by_type?.vest   || 0) },
+        { label: 'Fall Detected',    value: String(s.by_type?.fallen || 0) },
+        { label: 'Pending Review',   value: String(s.pending         || 0) },
       ];
-      const cardW = (pageW - margin * 2 - 4 * 4) / 5;
+      const gap = 3;
+      const cardW = (contentW - gap * (cards.length - 1)) / cards.length;
       let cardX = margin;
-      const cardY = 34;
+      const cardY = 40;
       cards.forEach(card => {
         doc.setFillColor(248, 250, 252);
         doc.setDrawColor(229, 231, 235);
@@ -379,21 +393,21 @@ export function Reporting() {
         doc.setTextColor(107, 114, 128);
         doc.setFontSize(6.5);
         doc.setFont('helvetica', 'normal');
-        doc.text(card.label, cardX + cardW / 2, cardY + 6, { align: 'center' });
+        doc.text(card.label, cardX + cardW / 2, cardY + 6,  { align: 'center' });
         doc.setTextColor(17, 24, 39);
         doc.setFontSize(13);
         doc.setFont('helvetica', 'bold');
         doc.text(card.value, cardX + cardW / 2, cardY + 14, { align: 'center' });
-        cardX += cardW + 4;
+        cardX += cardW + gap;
       });
 
-      // ---- Type distribution ----
+      // ---- Violation distribution table ----
       let curY = cardY + 24;
       doc.setTextColor(30, 58, 95);
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.text('Violation Distribution', margin, curY);
-      curY += 4;
+      curY += 5;
 
       const distData = (reportData.violation_distribution || []).map(d => [
         d.name,
@@ -406,37 +420,40 @@ export function Reporting() {
           startY: curY,
           head: [['Violation Type', 'Count', 'Percentage']],
           body: distData,
+          tableWidth: contentW,
           margin: { left: margin, right: margin },
-          styles: { fontSize: 9, cellPadding: 3 },
+          styles: { fontSize: 9, cellPadding: 3, halign: 'left' },
           headStyles: { fillColor: [30, 58, 95], textColor: 255, fontStyle: 'bold' },
           alternateRowStyles: { fillColor: [249, 250, 251] },
           columnStyles: { 1: { halign: 'center' }, 2: { halign: 'center' } },
         });
-        curY = doc.lastAutoTable.finalY + 8;
+        curY = doc.lastAutoTable.finalY + 10;
       } else {
         curY += 6;
       }
 
-      // ---- Violations table ----
+      // ---- Violations detail table ----
       doc.setTextColor(30, 58, 95);
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.text('Violation Details', margin, curY);
-      curY += 4;
+      curY += 5;
 
       const rows = (reportData.violations || []).slice(0, 200).map(v => [
         String(v.id),
         v.type_label || v.type,
-        v.model || '—',
-        v.camera_label || '—',
-        v.datetime ? new Date(v.datetime).toLocaleString('tr-TR') : '—',
-        (v.review_status || 'pending').charAt(0).toUpperCase() + (v.review_status || 'pending').slice(1),
+        v.model || '-',
+        v.camera_label || '-',
+        v.datetime ? new Date(v.datetime).toLocaleString('tr-TR') : '-',
+        (v.review_status || 'pending').charAt(0).toUpperCase() +
+          (v.review_status || 'pending').slice(1),
       ]);
 
       autoTable(doc, {
         startY: curY,
         head: [['ID', 'Type', 'Model', 'Camera', 'Date & Time', 'Status']],
         body: rows,
+        tableWidth: contentW,
         margin: { left: margin, right: margin },
         styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak' },
         headStyles: { fillColor: [30, 58, 95], textColor: 255, fontStyle: 'bold' },
@@ -444,26 +461,14 @@ export function Reporting() {
         columnStyles: {
           0: { cellWidth: 12 },
           1: { cellWidth: 28 },
-          2: { cellWidth: 36 },
-          3: { cellWidth: 26 },
-          4: { cellWidth: 38 },
-          5: { cellWidth: 22 },
-        },
-        didDrawCell: (data) => {
-          if (data.section === 'body' && data.column.index === 5) {
-            const status = (rows[data.row.index]?.[5] || '').toLowerCase();
-            if (status === 'pending') {
-              doc.setFillColor(254, 249, 195);
-            } else if (status === 'reviewed') {
-              doc.setFillColor(219, 234, 254);
-            } else if (status === 'resolved') {
-              doc.setFillColor(220, 252, 231);
-            }
-          }
+          2: { cellWidth: 38 },
+          3: { cellWidth: 28 },
+          4: { cellWidth: 44 },
+          5: { cellWidth: 24 },
         },
       });
 
-      // ---- Footer ----
+      // ---- Footer on every page ----
       const totalPages = doc.internal.getNumberOfPages();
       for (let i = 1; i <= totalPages; i++) {
         doc.setPage(i);
@@ -473,9 +478,8 @@ export function Reporting() {
         doc.setFontSize(7);
         doc.setFont('helvetica', 'normal');
         doc.text(
-          `SafetyWatch — Confidential   |   Page ${i} of ${totalPages}`,
-          pageW / 2, pageH - 4,
-          { align: 'center' },
+          `SafetyWatch - Confidential   |   Page ${i} of ${totalPages}`,
+          cx, pageH - 4, { align: 'center' },
         );
       }
 
