@@ -295,8 +295,6 @@ export function Violations() {
                   </optgroup>
                   <optgroup label="Fall Detection Model">
                     <option value="fallen">Fall Detected</option>
-                    <option value="sitting">Sitting</option>
-                    <option value="standing">Standing</option>
                   </optgroup>
                 </select>
                 <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2.5 top-3 pointer-events-none" />
