@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, Clock, PersonStanding } from 'lucide-react';
+import { AlertTriangle, HardHat, Shirt, Camera, Calendar, Filter, Eye, ChevronDown, Clock } from 'lucide-react';
 import { apiClient, addCompanyCodeToUrl } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -47,18 +47,6 @@ const VIOLATION_TYPE_CONFIG = {
     badge: 'bg-purple-50 text-purple-700 border-purple-100',
     icon: AlertTriangle,
     category: 'fall',
-  },
-  sitting: {
-    label: 'Sitting',
-    badge: 'bg-blue-50 text-blue-700 border-blue-100',
-    icon: PersonStanding,
-    category: 'posture',
-  },
-  standing: {
-    label: 'Standing',
-    badge: 'bg-gray-50 text-gray-600 border-gray-200',
-    icon: PersonStanding,
-    category: 'posture',
   },
 };
 
