@@ -12,3 +12,4 @@ python-multipart
 opencv-python
 ultralytics
 argon2-cffi
+openpyxl
