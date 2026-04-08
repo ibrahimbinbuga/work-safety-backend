@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from database import Base, engine
 import globals as g
-from routes import auth, cameras, detections, users
+from routes import auth, cameras, detections, users, reports
 from routes import models as models_router
 from services.model_service import ensure_company_model_cameras_schema
 from services.violation_service import violation_consumer_task
@@ -31,6 +31,7 @@ app.include_router(users.router)
 app.include_router(cameras.router)
 app.include_router(detections.router)
 app.include_router(models_router.router)
+app.include_router(reports.router)
 
 
 @app.get("/")
