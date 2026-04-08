@@ -4,7 +4,7 @@ import csv
 import io
 from collections import defaultdict
 from datetime import datetime, date, timedelta, time
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -52,8 +52,8 @@ def _build_filters(
     company_id: int,
     from_date: Optional[date],
     to_date: Optional[date],
-    violation_type: Optional[str],
-    review_status: Optional[str],
+    violation_types: List[str],
+    review_statuses: List[str],
 ):
     filters = [models.Violations.company_id == company_id]
     if from_date:
@@ -64,10 +64,10 @@ def _build_filters(
         filters.append(
             models.Violations.tarih_saat <= datetime.combine(to_date, time.max)
         )
-    if violation_type and violation_type != "all":
-        filters.append(models.Violations.ihlal_cesidi == violation_type)
-    if review_status and review_status != "all":
-        filters.append(models.Violations.review_status == review_status)
+    if violation_types:
+        filters.append(models.Violations.ihlal_cesidi.in_(violation_types))
+    if review_statuses:
+        filters.append(models.Violations.review_status.in_(review_statuses))
     return filters
 
 
@@ -80,15 +80,15 @@ async def get_report_data(
     company_code: str,
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
-    violation_type: Optional[str] = Query(None),
-    review_status: Optional[str] = Query(None),
+    violation_types: List[str] = Query(default=[]),
+    review_statuses: List[str] = Query(default=[]),
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await verify_company_access(current_user, company_code)
     company = await _get_company(db, company_code)
 
-    filters = _build_filters(company.id, from_date, to_date, violation_type, review_status)
+    filters = _build_filters(company.id, from_date, to_date, violation_types, review_statuses)
 
     result = await db.execute(
         select(models.Violations)
@@ -191,15 +191,15 @@ async def export_csv(
     company_code: str,
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
-    violation_type: Optional[str] = Query(None),
-    review_status: Optional[str] = Query(None),
+    violation_types: List[str] = Query(default=[]),
+    review_statuses: List[str] = Query(default=[]),
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await verify_company_access(current_user, company_code)
     company = await _get_company(db, company_code)
 
-    filters = _build_filters(company.id, from_date, to_date, violation_type, review_status)
+    filters = _build_filters(company.id, from_date, to_date, violation_types, review_statuses)
     result = await db.execute(
         select(models.Violations)
         .where(and_(*filters))
@@ -242,8 +242,8 @@ async def export_excel(
     company_code: str,
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
-    violation_type: Optional[str] = Query(None),
-    review_status: Optional[str] = Query(None),
+    violation_types: List[str] = Query(default=[]),
+    review_statuses: List[str] = Query(default=[]),
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -260,7 +260,7 @@ async def export_excel(
     await verify_company_access(current_user, company_code)
     company = await _get_company(db, company_code)
 
-    filters = _build_filters(company.id, from_date, to_date, violation_type, review_status)
+    filters = _build_filters(company.id, from_date, to_date, violation_types, review_statuses)
     result = await db.execute(
         select(models.Violations)
         .where(and_(*filters))

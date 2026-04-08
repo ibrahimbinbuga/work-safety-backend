@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Calendar, Download, FileText, TrendingUp, AlertTriangle,
   Camera, FileSpreadsheet, Shield, CheckCircle, Clock, Filter,
@@ -56,17 +56,167 @@ function daysAgoStr(n) {
   return d.toISOString().split('T')[0];
 }
 
-function buildQueryString(params) {
+// Violation type options grouped by model
+const VIOLATION_TYPE_OPTIONS = [
+  { group: 'PPE Model',             value: 'head',   label: 'No Helmet' },
+  { group: 'PPE Model',             value: 'vest',   label: 'No Vest' },
+  { group: 'Fall Detection Model',  value: 'fallen', label: 'Fall Detected' },
+];
+
+// Group keys → type values for "select whole model" shortcut
+const MODEL_GROUPS = [
+  { key: 'ppe',  label: 'PPE Model',            types: ['head', 'vest'] },
+  { key: 'fall', label: 'Fall Detection Model',  types: ['fallen'] },
+];
+
+const STATUS_OPTIONS = [
+  { value: 'pending',  label: 'Pending' },
+  { value: 'reviewed', label: 'Reviewed' },
+  { value: 'resolved', label: 'Resolved' },
+];
+
+function buildQueryString(fromDate, toDate, violationTypes, reviewStatuses) {
   const qs = new URLSearchParams();
-  Object.entries(params).forEach(([k, v]) => {
-    if (v && v !== 'all') qs.append(k, v);
-  });
+  if (fromDate) qs.append('from_date', fromDate);
+  if (toDate)   qs.append('to_date', toDate);
+  violationTypes.forEach(t => qs.append('violation_types', t));
+  reviewStatuses.forEach(s => qs.append('review_statuses', s));
   return qs.toString() ? '?' + qs.toString() : '';
 }
 
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+/**
+ * Dropdown multi-select with checkbox items, grouped sections, and
+ * "select whole group" shortcuts.
+ *
+ * Props:
+ *   label        – placeholder text when nothing selected
+ *   options      – [{ group?, value, label }]
+ *   groups       – optional [{ key, label, types }] for group-select buttons
+ *   selected     – string[]
+ *   onChange     – (string[]) => void
+ */
+function MultiSelect({ label, options, groups, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  // Close on outside click
+  useEffect(() => {
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, []);
+
+  const toggle = (val) => {
+    onChange(
+      selected.includes(val) ? selected.filter(v => v !== val) : [...selected, val]
+    );
+  };
+
+  const toggleGroup = (types) => {
+    const allSelected = types.every(t => selected.includes(t));
+    if (allSelected) {
+      onChange(selected.filter(v => !types.includes(v)));
+    } else {
+      const merged = [...new Set([...selected, ...types])];
+      onChange(merged);
+    }
+  };
+
+  const selectedLabels = options
+    .filter(o => selected.includes(o.value))
+    .map(o => o.label);
+
+  // Render grouped options
+  const groupedOptions = () => {
+    if (!options.some(o => o.group)) {
+      return options.map(opt => (
+        <label key={opt.value} className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
+          <input
+            type="checkbox"
+            checked={selected.includes(opt.value)}
+            onChange={() => toggle(opt.value)}
+            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-gray-700">{opt.label}</span>
+        </label>
+      ));
+    }
+
+    const groupNames = [...new Set(options.map(o => o.group))];
+    return groupNames.map(groupName => {
+      const groupOpts = options.filter(o => o.group === groupName);
+      const groupTypes = groupOpts.map(o => o.value);
+      const allGroupSelected = groupTypes.every(t => selected.includes(t));
+      return (
+        <div key={groupName}>
+          <div
+            className="flex items-center justify-between px-3 py-1.5 bg-gray-50 cursor-pointer group"
+            onClick={() => toggleGroup(groupTypes)}
+          >
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{groupName}</span>
+            <span className={`text-xs font-medium transition-colors ${allGroupSelected ? 'text-blue-600' : 'text-gray-400 group-hover:text-blue-500'}`}>
+              {allGroupSelected ? '✓ All' : 'Select all'}
+            </span>
+          </div>
+          {groupOpts.map(opt => (
+            <label key={opt.value} className="flex items-center gap-2.5 px-4 py-2 hover:bg-gray-50 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={selected.includes(opt.value)}
+                onChange={() => toggle(opt.value)}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-gray-700">{opt.label}</span>
+            </label>
+          ))}
+        </div>
+      );
+    });
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between pl-3 pr-2.5 py-2 border border-gray-300 rounded-lg text-sm bg-white hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+      >
+        <span className={selectedLabels.length ? 'text-gray-900' : 'text-gray-400'}>
+          {selectedLabels.length === 0
+            ? `All ${label}`
+            : selectedLabels.length <= 2
+              ? selectedLabels.join(', ')
+              : `${selectedLabels.length} selected`}
+        </span>
+        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ml-1 ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+          {selected.length > 0 && (
+            <div className="px-3 py-1.5 border-b border-gray-100">
+              <button
+                onClick={() => onChange([])}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                Clear all
+              </button>
+            </div>
+          )}
+          <div className="max-h-56 overflow-y-auto">
+            {groupedOptions()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function StatCard({ label, value, icon: Icon, iconBg, sub }) {
   return (
@@ -118,8 +268,8 @@ export function Reporting() {
   // Filters
   const [fromDate, setFromDate] = useState(daysAgoStr(7));
   const [toDate, setToDate] = useState(todayStr());
-  const [violationType, setViolationType] = useState('all');
-  const [reviewStatus, setReviewStatus] = useState('all');
+  const [violationTypes, setViolationTypes] = useState([]);   // [] = all
+  const [reviewStatuses, setReviewStatuses] = useState([]);   // [] = all
   const [quickPeriod, setQuickPeriod] = useState('week');
 
   // Data
@@ -149,12 +299,8 @@ export function Reporting() {
     setLoading(true);
     setError(null);
     try {
-      const params = { from_date: fromDate, to_date: toDate, violation_type: violationType, review_status: reviewStatus };
-      const qs = buildQueryString(params);
-      const url = addCompanyCodeToUrl(
-        `/api/company/${activeCompanyCode}/reports/data${qs}`,
-        activeCompanyCode,
-      );
+      const qs = buildQueryString(fromDate, toDate, violationTypes, reviewStatuses);
+      const url = `/api/company/${activeCompanyCode}/reports/data${qs}`;
       const res = await apiClient.get(url);
       setReportData(res.data);
       setGenerated(true);
@@ -163,14 +309,13 @@ export function Reporting() {
     } finally {
       setLoading(false);
     }
-  }, [activeCompanyCode, fromDate, toDate, violationType, reviewStatus]);
+  }, [activeCompanyCode, fromDate, toDate, violationTypes, reviewStatuses]);
 
   // CSV / Excel download via backend
   const handleDownload = async (format) => {
     setExporting(prev => ({ ...prev, [format]: true }));
     try {
-      const params = { from_date: fromDate, to_date: toDate, violation_type: violationType, review_status: reviewStatus };
-      const qs = buildQueryString(params);
+      const qs = buildQueryString(fromDate, toDate, violationTypes, reviewStatuses);
       const url = `/api/company/${activeCompanyCode}/reports/export/${format}${qs}`;
       const res = await apiClient.get(url, { responseType: 'blob' });
       const ext = format === 'excel' ? 'xlsx' : 'csv';
@@ -399,44 +544,26 @@ export function Reporting() {
             </div>
           </div>
 
-          {/* Violation type */}
+          {/* Violation type multi-select */}
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1.5">Violation Type</label>
-            <div className="relative">
-              <select
-                value={violationType}
-                onChange={e => setViolationType(e.target.value)}
-                className="w-full pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All Types</option>
-                <optgroup label="PPE Model">
-                  <option value="head">No Helmet</option>
-                  <option value="vest">No Vest</option>
-                </optgroup>
-                <optgroup label="Fall Detection">
-                  <option value="fallen">Fall Detected</option>
-                </optgroup>
-              </select>
-              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-            </div>
+            <MultiSelect
+              label="Types"
+              options={VIOLATION_TYPE_OPTIONS}
+              selected={violationTypes}
+              onChange={setViolationTypes}
+            />
           </div>
 
-          {/* Review status */}
+          {/* Review status multi-select */}
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1.5">Review Status</label>
-            <div className="relative">
-              <select
-                value={reviewStatus}
-                onChange={e => setReviewStatus(e.target.value)}
-                className="w-full pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All Statuses</option>
-                <option value="pending">Pending</option>
-                <option value="reviewed">Reviewed</option>
-                <option value="resolved">Resolved</option>
-              </select>
-              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-            </div>
+            <MultiSelect
+              label="Statuses"
+              options={STATUS_OPTIONS}
+              selected={reviewStatuses}
+              onChange={setReviewStatuses}
+            />
           </div>
         </div>
 
