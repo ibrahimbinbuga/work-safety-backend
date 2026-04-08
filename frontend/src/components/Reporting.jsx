@@ -272,6 +272,25 @@ export function Reporting() {
   const [reviewStatuses, setReviewStatuses] = useState([]);   // [] = all
   const [quickPeriod, setQuickPeriod] = useState('week');
 
+  // Dynamic violation type options from assigned models
+  const [activeTypeOptions, setActiveTypeOptions] = useState(VIOLATION_TYPE_OPTIONS);
+
+  useEffect(() => {
+    if (!activeCompanyCode) return;
+    apiClient.get(`/api/company/${activeCompanyCode}/reports/active-types`)
+      .then(res => {
+        const activeTypes = res.data.types || [];
+        setActiveTypeOptions(
+          VIOLATION_TYPE_OPTIONS.filter(o => activeTypes.includes(o.value))
+        );
+        // Reset any selected types that are no longer valid
+        setViolationTypes(prev => prev.filter(t => activeTypes.includes(t)));
+      })
+      .catch(() => {
+        setActiveTypeOptions(VIOLATION_TYPE_OPTIONS); // fallback: show all
+      });
+  }, [activeCompanyCode]);
+
   // Data
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -553,7 +572,7 @@ export function Reporting() {
             <label className="block text-xs font-medium text-gray-600 mb-1.5">Violation Type</label>
             <MultiSelect
               label="Types"
-              options={VIOLATION_TYPE_OPTIONS}
+              options={activeTypeOptions}
               selected={violationTypes}
               onChange={setViolationTypes}
             />
