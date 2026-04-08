@@ -4,7 +4,7 @@ import csv
 import io
 from collections import defaultdict
 from datetime import datetime, date, timedelta, time
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -52,8 +52,8 @@ def _build_filters(
     company_id: int,
     from_date: Optional[date],
     to_date: Optional[date],
-    violation_type: Optional[str],
-    review_status: Optional[str],
+    violation_types: List[str],
+    review_statuses: List[str],
 ):
     filters = [models.Violations.company_id == company_id]
     if from_date:
@@ -64,11 +64,80 @@ def _build_filters(
         filters.append(
             models.Violations.tarih_saat <= datetime.combine(to_date, time.max)
         )
-    if violation_type and violation_type != "all":
-        filters.append(models.Violations.ihlal_cesidi == violation_type)
-    if review_status and review_status != "all":
-        filters.append(models.Violations.review_status == review_status)
+    if violation_types:
+        filters.append(models.Violations.ihlal_cesidi.in_(violation_types))
+    if review_statuses:
+        filters.append(models.Violations.review_status.in_(review_statuses))
     return filters
+
+
+# ---------------------------------------------------------------------------
+# Active violation types for a company (based on assigned models)
+# ---------------------------------------------------------------------------
+
+# Maps violation types to their model group label
+_TYPE_TO_MODEL_GROUP = {
+    "head":   "PPE Model",
+    "vest":   "PPE Model",
+    "fallen": "Fall Detection Model",
+}
+
+
+def _model_path_to_types(path: str) -> list[str]:
+    """Infer applicable violation types from a model file path.
+
+    Convention used in this project:
+      - fall_model/... or any path containing 'fall' → Fall Detection
+      - everything else                              → PPE (head + vest)
+    """
+    if "fall" in path.lower():
+        return ["fallen"]
+    return ["head", "vest"]
+
+
+@router.get("/api/company/{company_code}/reports/active-types")
+async def get_active_violation_types(
+    company_code: str,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the violation types that are relevant for this company
+    based on which models are currently assigned (is_active=True)."""
+    await verify_company_access(current_user, company_code)
+    company = await _get_company(db, company_code)
+
+    result = await db.execute(
+        select(models.ModelMeta)
+        .join(models.CompanyModel, models.CompanyModel.model_id == models.ModelMeta.id)
+        .where(
+            models.CompanyModel.company_id == company.id,
+            models.CompanyModel.is_active == True,
+        )
+    )
+    assigned_models = result.scalars().all()
+
+    active_types: list[str] = []
+    for m in assigned_models:
+        for t in _model_path_to_types(m.path or ""):
+            if t not in active_types:
+                active_types.append(t)
+
+    # Fallback: if no models assigned yet, return all types so UI isn't empty
+    if not active_types:
+        active_types = ["head", "vest", "fallen"]
+
+    return {
+        "types": active_types,
+        "groups": [
+            {
+                "label": group_label,
+                "types": [t for t in active_types if _TYPE_TO_MODEL_GROUP.get(t) == group_label],
+            }
+            for group_label in dict.fromkeys(
+                _TYPE_TO_MODEL_GROUP[t] for t in active_types if t in _TYPE_TO_MODEL_GROUP
+            )
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -80,15 +149,15 @@ async def get_report_data(
     company_code: str,
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
-    violation_type: Optional[str] = Query(None),
-    review_status: Optional[str] = Query(None),
+    violation_types: List[str] = Query(default=[]),
+    review_statuses: List[str] = Query(default=[]),
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await verify_company_access(current_user, company_code)
     company = await _get_company(db, company_code)
 
-    filters = _build_filters(company.id, from_date, to_date, violation_type, review_status)
+    filters = _build_filters(company.id, from_date, to_date, violation_types, review_statuses)
 
     result = await db.execute(
         select(models.Violations)
@@ -191,15 +260,15 @@ async def export_csv(
     company_code: str,
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
-    violation_type: Optional[str] = Query(None),
-    review_status: Optional[str] = Query(None),
+    violation_types: List[str] = Query(default=[]),
+    review_statuses: List[str] = Query(default=[]),
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     await verify_company_access(current_user, company_code)
     company = await _get_company(db, company_code)
 
-    filters = _build_filters(company.id, from_date, to_date, violation_type, review_status)
+    filters = _build_filters(company.id, from_date, to_date, violation_types, review_statuses)
     result = await db.execute(
         select(models.Violations)
         .where(and_(*filters))
@@ -242,8 +311,8 @@ async def export_excel(
     company_code: str,
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
-    violation_type: Optional[str] = Query(None),
-    review_status: Optional[str] = Query(None),
+    violation_types: List[str] = Query(default=[]),
+    review_statuses: List[str] = Query(default=[]),
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -260,7 +329,7 @@ async def export_excel(
     await verify_company_access(current_user, company_code)
     company = await _get_company(db, company_code)
 
-    filters = _build_filters(company.id, from_date, to_date, violation_type, review_status)
+    filters = _build_filters(company.id, from_date, to_date, violation_types, review_statuses)
     result = await db.execute(
         select(models.Violations)
         .where(and_(*filters))
