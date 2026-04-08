@@ -753,27 +753,27 @@ def run_camera_thread(camera_id: int, rtsp_url: str, model_paths, loop, violatio
                 if current_time - last_violation_check_time >= VIOLATION_CHECK_INTERVAL:
                     last_violation_check_time = current_time
 
-                    # Fall model: send detected postures (sitting, fallen, standing) so DB stores exact type
-                    posture_classes = ('fallen', 'sitting', 'standing')
-                    detected_postures = list(dict.fromkeys(
-                        d.get('canonical_class')
+                    # Fall model: only 'fallen' is a real safety violation.
+                    # 'sitting' and 'standing' are normal states — saving them every interval
+                    # creates massive DB bloat without safety value.
+                    is_fallen = any(
+                        d.get('canonical_class') == 'fallen'
                         for d in detections
-                        if d.get('canonical_class') in posture_classes
-                    ))
-                    if detected_postures:
+                    )
+                    if is_fallen:
                         payload = {
                             'camera_id': camera_id,
                             'camera_source': source,
                             'worker_id': 0,
                             'timestamp': datetime.now(),
-                            'violations': detected_postures,
+                            'violations': ['fallen'],
                             'status': 'posture_detected',
                             'changes': None,
                             'snapshot_path': None,
                         }
                         try:
                             loop.call_soon_threadsafe(violation_queue.put_nowait, payload)
-                            print(f"[CameraRunner][Camera {camera_id}] posture violation(s) sent to queue: {detected_postures}")
+                            print(f"[CameraRunner][Camera {camera_id}] fallen person detected — violation sent to queue")
                         except Exception as e:
                             print(f"[CameraRunner][Camera {camera_id}] error sending posture violation: {e}")
 
