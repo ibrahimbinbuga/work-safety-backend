@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, memo } from 'react';
 import { Camera, PlayCircle, StopCircle } from 'lucide-react';
+import { API_URL } from '../utils/api';
 
 function LiveCameraFeedComponent({ camera }) {
   const imgRef = useRef(null);
@@ -10,7 +11,7 @@ function LiveCameraFeedComponent({ camera }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    const streamUrl = `http://127.0.0.1:8000/api/camera/${camera.id}/stream`;
+    const streamUrl = `${API_URL}/api/camera/${camera.id}/stream`;
     const cameraIdChanged = currentCameraIdRef.current !== camera.id;
     
     // Update refs

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { API_URL } from '../utils/api';
 
 export function Models() {
   const { isAdmin, token } = useAuth();
@@ -34,7 +35,7 @@ export function Models() {
     
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/general-models', {
+      const res = await fetch(`${API_URL}/api/general-models`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
@@ -87,7 +88,7 @@ export function Models() {
     formData.append('description', modelDesc);
 
     try {
-      const res = await fetch('http://localhost:8000/api/general-model/upload', {
+      const res = await fetch(`${API_URL}/api/model/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData,

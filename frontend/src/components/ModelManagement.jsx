@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { API_URL } from '../utils/api';
 
 export function ModelManagement() {
   const { isAdmin, activeCompanyCode, token } = useAuth();
@@ -47,7 +48,7 @@ export function ModelManagement() {
     if (!isAdmin) return;
     
     setLoadingCompanies(true);
-    fetch('http://localhost:8000/api/companies', {
+    fetch(`${API_URL}/api/companies`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(res => res.json())
@@ -70,7 +71,7 @@ export function ModelManagement() {
   useEffect(() => {
     if (!selectedCompany) return;
 
-    fetch(`http://localhost:8000/api/company/${selectedCompany}/models`, {
+    fetch(`${API_URL}/api/company/${selectedCompany}/models`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(res => res.json())
@@ -101,7 +102,7 @@ export function ModelManagement() {
   useEffect(() => {
     if (!isAdmin) return;
 
-    fetch('http://localhost:8000/api/models', {
+    fetch(`${API_URL}/api/models`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(res => res.json())
@@ -131,7 +132,7 @@ export function ModelManagement() {
     formData.append('description', modelDesc);
 
     try {
-      const res = await fetch('http://localhost:8000/api/model/upload', {
+      const res = await fetch(`${API_URL}/api/model/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
@@ -162,7 +163,7 @@ export function ModelManagement() {
 
     try {
       const res = await fetch(
-        `http://localhost:8000/api/company/${selectedCompany}/models/${modelId}/assign`,
+        `${API_URL}/api/company/${selectedCompany}/models/${modelId}/assign`,
         {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}` },
@@ -174,7 +175,7 @@ export function ModelManagement() {
       }
       alert('Model successfully assigned!');
       const refreshRes = await fetch(
-        `http://localhost:8000/api/company/${selectedCompany}/models`,
+        `${API_URL}/api/company/${selectedCompany}/models`,
         {
           headers: { 'Authorization': `Bearer ${token}` }
         }
@@ -197,7 +198,7 @@ export function ModelManagement() {
     setActivating(true);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/company/${selectedCompany}/models/${companyModelId}/activate`,
+        `${API_URL}/api/company/${selectedCompany}/models/${companyModelId}/activate`,
         {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}` },
@@ -207,7 +208,7 @@ export function ModelManagement() {
       const data = await res.json();
       alert(data.message || 'Model activated!');
       const refreshRes = await fetch(
-        `http://localhost:8000/api/company/${selectedCompany}/models`,
+        `${API_URL}/api/company/${selectedCompany}/models`,
         {
           headers: { 'Authorization': `Bearer ${token}` }
         }
@@ -236,7 +237,7 @@ export function ModelManagement() {
     setActivating(true);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/company/${selectedCompany}/models/${companyModelId}/deactivate`,
+        `${API_URL}/api/company/${selectedCompany}/models/${companyModelId}/deactivate`,
         {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}` },
@@ -246,7 +247,7 @@ export function ModelManagement() {
       const data = await res.json();
       alert(data.message || 'Model deactivated!');
       const refreshRes = await fetch(
-        `http://localhost:8000/api/company/${selectedCompany}/models`,
+        `${API_URL}/api/company/${selectedCompany}/models`,
         {
           headers: { 'Authorization': `Bearer ${token}` }
         }
@@ -295,7 +296,7 @@ export function ModelManagement() {
       formData.append('file', blob, 'image.jpg');
       formData.append('model_path', activeModelMeta.path);
 
-      const res = await fetch('http://localhost:8000/api/detect', {
+      const res = await fetch(`${API_URL}/api/detect`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
