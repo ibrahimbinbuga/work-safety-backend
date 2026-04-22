@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Calendar, Download, FileText, TrendingUp, AlertTriangle,
   Camera, FileSpreadsheet, Shield, CheckCircle, Clock, Filter,
-  ChevronDown, RefreshCw,
+  ChevronDown, RefreshCw, Mail,
 } from 'lucide-react';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -299,6 +299,9 @@ export function Reporting() {
 
   // Export states
   const [exporting, setExporting] = useState({ pdf: false, csv: false, excel: false });
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [emailing, setEmailing] = useState(false);
+  const [showEmailSuccessToast, setShowEmailSuccessToast] = useState(false);
 
   const handleQuickSelect = (period) => {
     setQuickPeriod(period);
@@ -351,163 +354,190 @@ export function Reporting() {
     }
   };
 
+  // Build PDF report on client; reused for download + e-mail
+  const generatePdfBlob = async () => {
+    if (!reportData) return;
+    const { default: jsPDF } = await import('jspdf');
+    const { default: autoTable } = await import('jspdf-autotable');
+
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = 18;
+    const contentW = pageW - margin * 2;
+    const cx = pageW / 2;
+
+    const now = new Date();
+    const generatedStr = now.toLocaleString('tr-TR');
+    const periodStr = `${fromDate} - ${toDate}`;
+
+    doc.setFillColor(30, 58, 95);
+    doc.rect(0, 0, pageW, 34, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(17);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Safety Violations Report', cx, 12, { align: 'center' });
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.text(
+      `Company: ${activeCompanyCode?.toUpperCase()}   |   Generated: ${generatedStr}`,
+      cx, 21, { align: 'center' },
+    );
+    doc.text(`Period: ${periodStr}`, cx, 28, { align: 'center' });
+
+    const s = reportData.summary;
+    const cards = [
+      { label: 'Total Violations', value: String(s.total) },
+      { label: 'No Helmet',        value: String(s.by_type?.head || 0) },
+      { label: 'No Vest',          value: String(s.by_type?.vest || 0) },
+      { label: 'Fall Detected',    value: String(s.by_type?.fallen || 0) },
+      { label: 'Pending Review',   value: String(s.pending || 0) },
+    ];
+    const gap = 3;
+    const cardW = (contentW - gap * (cards.length - 1)) / cards.length;
+    let cardX = margin;
+    const cardY = 40;
+    cards.forEach(card => {
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(229, 231, 235);
+      doc.roundedRect(cardX, cardY, cardW, 18, 2, 2, 'FD');
+      doc.setTextColor(107, 114, 128);
+      doc.setFontSize(6.5);
+      doc.setFont('helvetica', 'normal');
+      doc.text(card.label, cardX + cardW / 2, cardY + 6, { align: 'center' });
+      doc.setTextColor(17, 24, 39);
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.text(card.value, cardX + cardW / 2, cardY + 14, { align: 'center' });
+      cardX += cardW + gap;
+    });
+
+    let curY = cardY + 24;
+    doc.setTextColor(30, 58, 95);
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Violation Distribution', margin, curY);
+    curY += 5;
+
+    const distData = (reportData.violation_distribution || []).map(d => [
+      d.name,
+      String(d.value),
+      s.total > 0 ? `${((d.value / s.total) * 100).toFixed(1)}%` : '0%',
+    ]);
+
+    if (distData.length > 0) {
+      autoTable(doc, {
+        startY: curY,
+        head: [['Violation Type', 'Count', 'Percentage']],
+        body: distData,
+        tableWidth: contentW,
+        margin: { left: margin, right: margin },
+        styles: { fontSize: 9, cellPadding: 3, halign: 'left' },
+        headStyles: { fillColor: [30, 58, 95], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [249, 250, 251] },
+        columnStyles: { 1: { halign: 'center' }, 2: { halign: 'center' } },
+      });
+      curY = doc.lastAutoTable.finalY + 10;
+    } else {
+      curY += 6;
+    }
+
+    doc.setTextColor(30, 58, 95);
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Violation Details', margin, curY);
+    curY += 5;
+
+    const rows = (reportData.violations || []).slice(0, 200).map(v => [
+      String(v.id),
+      v.type_label || v.type,
+      v.model || '-',
+      v.camera_label || '-',
+      v.datetime ? new Date(v.datetime).toLocaleString('tr-TR') : '-',
+      (v.review_status || 'pending').charAt(0).toUpperCase() +
+        (v.review_status || 'pending').slice(1),
+    ]);
+
+    autoTable(doc, {
+      startY: curY,
+      head: [['ID', 'Type', 'Model', 'Camera', 'Date & Time', 'Status']],
+      body: rows,
+      tableWidth: contentW,
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak' },
+      headStyles: { fillColor: [30, 58, 95], textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [249, 250, 251] },
+      columnStyles: {
+        0: { cellWidth: 12 },
+        1: { cellWidth: 28 },
+        2: { cellWidth: 38 },
+        3: { cellWidth: 28 },
+        4: { cellWidth: 44 },
+        5: { cellWidth: 24 },
+      },
+    });
+
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i);
+      doc.setFillColor(248, 250, 252);
+      doc.rect(0, pageH - 10, pageW, 10, 'F');
+      doc.setTextColor(156, 163, 175);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.text(
+        `SafetyWatch - Confidential   |   Page ${i} of ${totalPages}`,
+        cx, pageH - 4, { align: 'center' },
+      );
+    }
+
+    return doc.output('blob');
+  };
+
   // PDF export — generated client-side with jsPDF
   const handlePdfExport = async () => {
     if (!reportData) return;
     setExporting(prev => ({ ...prev, pdf: true }));
     try {
-      const { default: jsPDF } = await import('jspdf');
-      const { default: autoTable } = await import('jspdf-autotable');
-
-      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-      const pageW = doc.internal.pageSize.getWidth();   // 210
-      const pageH = doc.internal.pageSize.getHeight();  // 297
-      const margin = 18;   // equal left & right margin for centering
-      const contentW = pageW - margin * 2;              // 174 mm usable width
-      const cx = pageW / 2;                             // horizontal centre
-
-      // ASCII-safe date/time strings — avoid Unicode chars that break jsPDF encoding
-      const now = new Date();
-      const generatedStr = now.toLocaleString('tr-TR'); // "08.04.2026 14:23:45"
-      const periodStr = `${fromDate} - ${toDate}`;      // plain hyphen, not arrow
-
-      // ---- Header band ----
-      doc.setFillColor(30, 58, 95);
-      doc.rect(0, 0, pageW, 34, 'F');
-
-      // Title — centred
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(17);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Safety Violations Report', cx, 12, { align: 'center' });
-
-      // Company + generated time on one line, centred
-      doc.setFontSize(9);
-      doc.setFont('helvetica', 'normal');
-      doc.text(
-        `Company: ${activeCompanyCode?.toUpperCase()}   |   Generated: ${generatedStr}`,
-        cx, 21, { align: 'center' },
-      );
-
-      // Period on next line, centred
-      doc.text(`Period: ${periodStr}`, cx, 28, { align: 'center' });
-
-      // ---- Summary cards (5 equal boxes, centred row) ----
-      const s = reportData.summary;
-      const cards = [
-        { label: 'Total Violations', value: String(s.total) },
-        { label: 'No Helmet',        value: String(s.by_type?.head   || 0) },
-        { label: 'No Vest',          value: String(s.by_type?.vest   || 0) },
-        { label: 'Fall Detected',    value: String(s.by_type?.fallen || 0) },
-        { label: 'Pending Review',   value: String(s.pending         || 0) },
-      ];
-      const gap = 3;
-      const cardW = (contentW - gap * (cards.length - 1)) / cards.length;
-      let cardX = margin;
-      const cardY = 40;
-      cards.forEach(card => {
-        doc.setFillColor(248, 250, 252);
-        doc.setDrawColor(229, 231, 235);
-        doc.roundedRect(cardX, cardY, cardW, 18, 2, 2, 'FD');
-        doc.setTextColor(107, 114, 128);
-        doc.setFontSize(6.5);
-        doc.setFont('helvetica', 'normal');
-        doc.text(card.label, cardX + cardW / 2, cardY + 6,  { align: 'center' });
-        doc.setTextColor(17, 24, 39);
-        doc.setFontSize(13);
-        doc.setFont('helvetica', 'bold');
-        doc.text(card.value, cardX + cardW / 2, cardY + 14, { align: 'center' });
-        cardX += cardW + gap;
-      });
-
-      // ---- Violation distribution table ----
-      let curY = cardY + 24;
-      doc.setTextColor(30, 58, 95);
-      doc.setFontSize(11);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Violation Distribution', margin, curY);
-      curY += 5;
-
-      const distData = (reportData.violation_distribution || []).map(d => [
-        d.name,
-        String(d.value),
-        s.total > 0 ? `${((d.value / s.total) * 100).toFixed(1)}%` : '0%',
-      ]);
-
-      if (distData.length > 0) {
-        autoTable(doc, {
-          startY: curY,
-          head: [['Violation Type', 'Count', 'Percentage']],
-          body: distData,
-          tableWidth: contentW,
-          margin: { left: margin, right: margin },
-          styles: { fontSize: 9, cellPadding: 3, halign: 'left' },
-          headStyles: { fillColor: [30, 58, 95], textColor: 255, fontStyle: 'bold' },
-          alternateRowStyles: { fillColor: [249, 250, 251] },
-          columnStyles: { 1: { halign: 'center' }, 2: { halign: 'center' } },
-        });
-        curY = doc.lastAutoTable.finalY + 10;
-      } else {
-        curY += 6;
-      }
-
-      // ---- Violations detail table ----
-      doc.setTextColor(30, 58, 95);
-      doc.setFontSize(11);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Violation Details', margin, curY);
-      curY += 5;
-
-      const rows = (reportData.violations || []).slice(0, 200).map(v => [
-        String(v.id),
-        v.type_label || v.type,
-        v.model || '-',
-        v.camera_label || '-',
-        v.datetime ? new Date(v.datetime).toLocaleString('tr-TR') : '-',
-        (v.review_status || 'pending').charAt(0).toUpperCase() +
-          (v.review_status || 'pending').slice(1),
-      ]);
-
-      autoTable(doc, {
-        startY: curY,
-        head: [['ID', 'Type', 'Model', 'Camera', 'Date & Time', 'Status']],
-        body: rows,
-        tableWidth: contentW,
-        margin: { left: margin, right: margin },
-        styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak' },
-        headStyles: { fillColor: [30, 58, 95], textColor: 255, fontStyle: 'bold' },
-        alternateRowStyles: { fillColor: [249, 250, 251] },
-        columnStyles: {
-          0: { cellWidth: 12 },
-          1: { cellWidth: 28 },
-          2: { cellWidth: 38 },
-          3: { cellWidth: 28 },
-          4: { cellWidth: 44 },
-          5: { cellWidth: 24 },
-        },
-      });
-
-      // ---- Footer on every page ----
-      const totalPages = doc.internal.getNumberOfPages();
-      for (let i = 1; i <= totalPages; i++) {
-        doc.setPage(i);
-        doc.setFillColor(248, 250, 252);
-        doc.rect(0, pageH - 10, pageW, 10, 'F');
-        doc.setTextColor(156, 163, 175);
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'normal');
-        doc.text(
-          `SafetyWatch - Confidential   |   Page ${i} of ${totalPages}`,
-          cx, pageH - 4, { align: 'center' },
-        );
-      }
-
-      doc.save(`violations_${activeCompanyCode}_${todayStr()}.pdf`);
+      const blob = await generatePdfBlob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `violations_${activeCompanyCode}_${todayStr()}.pdf`;
+      link.click();
+      URL.revokeObjectURL(link.href);
     } catch (err) {
       console.error('PDF export error:', err);
       alert('PDF export failed');
     } finally {
       setExporting(prev => ({ ...prev, pdf: false }));
+    }
+  };
+
+  const handleEmailReport = async () => {
+    if (!reportData) return;
+    if (!recipientEmail.trim()) {
+      alert('Please enter an e-mail address');
+      return;
+    }
+
+    setEmailing(true);
+    try {
+      const blob = await generatePdfBlob();
+      const formData = new FormData();
+      formData.append('recipient_email', recipientEmail.trim());
+      formData.append('pdf_file', blob, `violations_${activeCompanyCode}_${todayStr()}.pdf`);
+
+      await apiClient.post(`/api/company/${activeCompanyCode}/reports/email-pdf`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      setShowEmailSuccessToast(true);
+      setTimeout(() => setShowEmailSuccessToast(false), 3000);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      alert(detail || 'Failed to send e-mail report');
+    } finally {
+      setEmailing(false);
     }
   };
 
@@ -857,8 +887,37 @@ export function Reporting() {
                 {exporting.csv ? 'Generating CSV…' : 'Download CSV'}
               </button>
             </div>
+            <div className="mt-5 border-t border-gray-100 pt-4">
+              <p className="text-xs font-medium text-gray-600 mb-2">Send current report as PDF via e-mail</p>
+              <div className="flex flex-col md:flex-row gap-3">
+                <input
+                  type="email"
+                  placeholder="name@example.com"
+                  value={recipientEmail}
+                  onChange={(e) => setRecipientEmail(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={handleEmailReport}
+                  disabled={emailing || !generated}
+                  className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white px-5 py-2 rounded-lg font-medium text-sm transition-colors"
+                >
+                  {emailing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                  {emailing ? 'Sending…' : 'Send PDF to E-mail'}
+                </button>
+              </div>
+            </div>
           </div>
         </>
+      )}
+
+      {showEmailSuccessToast && (
+        <div className="fixed right-6 bottom-6 z-50">
+          <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-3 shadow-lg">
+            <CheckCircle className="w-5 h-5 text-green-600" />
+            <span className="text-sm font-medium text-green-800">Report sent successfully</span>
+          </div>
+        </div>
       )}
     </div>
   );

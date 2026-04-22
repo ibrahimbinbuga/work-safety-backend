@@ -2,11 +2,15 @@
 """Reporting endpoints: summary data + CSV/Excel exports."""
 import csv
 import io
+import os
+import smtplib
+import ssl
 from collections import defaultdict
 from datetime import datetime, date, timedelta, time
 from typing import List, Optional
+from email.message import EmailMessage
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -465,3 +469,61 @@ async def export_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/api/company/{company_code}/reports/email-pdf")
+async def email_report_pdf(
+    company_code: str,
+    recipient_email: str = Form(...),
+    pdf_file: UploadFile = File(...),
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await verify_company_access(current_user, company_code)
+    company = await _get_company(db, company_code)
+
+    if "@" not in recipient_email or "." not in recipient_email.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Invalid recipient email")
+
+    pdf_bytes = await pdf_file.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="PDF file is empty")
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF file is too large (max 10MB)")
+
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_from = os.getenv("SMTP_FROM", smtp_user or "")
+
+    if not smtp_host or not smtp_user or not smtp_password or not smtp_from:
+        raise HTTPException(
+            status_code=500,
+            detail="SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM",
+        )
+
+    filename = f"violations_{company_code}_{date.today().isoformat()}.pdf"
+    company_label = getattr(company, "name", company_code.upper())
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Safety Violations Report - {company_label}"
+    msg["From"] = smtp_from
+    msg["To"] = recipient_email
+    msg.set_content(
+        "Hello,\n\n"
+        f"Please find attached the safety violations report for {company_label}.\n\n"
+        "Best regards,\n"
+        "SafetyWatch"
+    )
+    msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {exc}")
+
+    return {"message": f"Report emailed to {recipient_email}"}
