@@ -23,7 +23,7 @@ def _resolve_model_path(model_path: str) -> str:
         return os.path.abspath(model_path)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     # backend/app/workers -> project root is four levels up
-    project_root = os.path.normpath(os.path.join(base_dir, "..", "..", "..", ".."))
+    project_root = os.path.normpath(os.path.join(base_dir, "..", "..", ".."))
 
     # 1) Try path relative to project root (DB stores paths like model/weights/best.pt)
     project_relative = os.path.normpath(os.path.join(project_root, model_path))

@@ -1,6 +1,5 @@
 """Camera thread lifecycle management and serialization helpers."""
 import threading
-from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
@@ -8,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.runtime.state as g
 from app.db import models
-from app.workers.camera_runner import run_camera_thread, get_latest_frame
+from app.workers.camera_runner import run_camera_thread, get_latest_frame, _resolve_model_path
 from app.services.model_service import (
     get_active_model_paths_for_camera,
     get_camera_active_models,
@@ -72,7 +71,9 @@ def start_camera_thread(
         print(f"[start_camera_thread] No model assigned, starting raw feed: camera_id={camera_id}")
     else:
         for path in resolved:
-            if not Path(path).exists():
+            try:
+                _resolve_model_path(path)
+            except FileNotFoundError:
                 print(f"[start_camera_thread] Model file not found: {path}")
 
     if camera_id in g.camera_threads:
