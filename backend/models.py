@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Sequence, Computed, Enum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Sequence, Computed, Enum, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -147,3 +147,19 @@ class CompanyModelCamera(Base):
     company = relationship("Company")
     camera = relationship("Camera", back_populates="model_assignments")
     model = relationship("ModelMeta", back_populates="camera_assignments")
+
+
+class CompanyNotificationSettings(Base):
+    __tablename__ = "company_notification_settings"
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), unique=True, nullable=False)
+    email_enabled = Column(Boolean, default=False, nullable=False)
+    report_period = Column(String, default="weekly", nullable=False)   # daily / weekly / monthly
+    report_formats = Column(JSON, default=["pdf"], nullable=False)     # ["pdf","excel","csv"]
+    push_enabled = Column(Boolean, default=True, nullable=False)
+    alert_critical = Column(Boolean, default=True, nullable=False)
+    alert_camera_offline = Column(Boolean, default=True, nullable=False)
+    alert_model_updates = Column(Boolean, default=False, nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    company = relationship("Company", backref="notification_settings")

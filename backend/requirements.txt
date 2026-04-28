@@ -13,3 +13,5 @@ opencv-python
 ultralytics
 argon2-cffi
 openpyxl
+apscheduler
+reportlab

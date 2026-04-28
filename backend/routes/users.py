@@ -1,6 +1,6 @@
 """Admin user management endpoints."""
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import TokenData, UserCreate, UserResponse, hash_password
@@ -56,10 +56,24 @@ async def create_user(
 
 @router.get("/api/admin/users")
 async def list_users(
+    company_code: str | None = None,
     admin_user: TokenData = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(models.User).order_by(models.User.created_at.desc()))
+    if company_code:
+        company_id_sq = (
+            select(models.Company.id)
+            .where(func.upper(models.Company.code) == func.upper(company_code))
+            .scalar_subquery()
+        )
+        query = (
+            select(models.User)
+            .where(models.User.company_id == company_id_sq)
+            .order_by(models.User.created_at.desc())
+        )
+    else:
+        query = select(models.User).order_by(models.User.created_at.desc())
+    result = await db.execute(query)
     return [UserResponse.from_orm(u) for u in result.scalars().all()]
 
 

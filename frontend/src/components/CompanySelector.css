@@ -125,3 +125,28 @@
   font-size: 1rem;
   color: #1f2937;
 }
+
+/* ── Dark mode overrides ── */
+html.dark .selector-content label  { color: #d1d5db; }
+
+html.dark .company-select {
+  background-color: #374151;
+  border-color: #4b5563;
+  color: #f9fafb;
+}
+html.dark .company-select:hover:not(:disabled) { border-color: #6b7280; }
+html.dark .company-select:disabled             { background-color: #1f2937; }
+
+html.dark .select-button               { background-color: #2563eb; }
+html.dark .select-button:hover:not(:disabled) { background-color: #1d4ed8; }
+html.dark .select-button:disabled      { background-color: #374151; color: #6b7280; }
+
+html.dark .loading-spinner { color: #9ca3af; }
+
+html.dark .current-company {
+  background-color: #1e3a8a;
+  border-color: #1e40af;
+  color: #bfdbfe;
+}
+
+html.dark .user-company-display { color: #f9fafb; }

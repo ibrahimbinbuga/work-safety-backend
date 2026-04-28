@@ -3,6 +3,7 @@ import { apiClient, addCompanyCodeToUrl } from '../utils/api';
 import { Camera, Activity, AlertTriangle, CheckCircle, XCircle, Shirt, HardHat, Clock } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { useAuth } from '../context/AuthContext';
+import { useAppearance } from '../context/AppearanceContext';
 
 // Son 7 günün ihlal verilerinden grafik datası üret
 const buildChartData = (violations) => {
@@ -29,6 +30,7 @@ const buildChartData = (violations) => {
 
 export function Dashboard() {
   const { isAdmin, activeCompanyCode } = useAuth();
+  const { settings: appearance } = useAppearance();
   const [cameras, setCameras] = useState([]);
   const [violations, setViolations] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -185,8 +187,13 @@ export function Dashboard() {
                   <XAxis dataKey="date" stroke="#6b7280" tickLine={false} axisLine={false} />
                   <YAxis stroke="#6b7280" tickLine={false} axisLine={false} allowDecimals={false} />
                   <Tooltip
-                    cursor={{ fill: '#F3F4F6' }}
-                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                    cursor={{ fill: appearance.isDarkMode ? '#374151' : '#F3F4F6' }}
+                    contentStyle={{
+                      backgroundColor: appearance.isDarkMode ? '#1f2937' : 'white',
+                      border: `1px solid ${appearance.isDarkMode ? '#374151' : '#e5e7eb'}`,
+                      borderRadius: '8px',
+                      color: appearance.isDarkMode ? '#f9fafb' : '#111827',
+                    }}
                   />
                   <Legend />
                   <Bar dataKey="PPE" fill="#ef4444" radius={[4, 4, 0, 0]} name="PPE Violation" />

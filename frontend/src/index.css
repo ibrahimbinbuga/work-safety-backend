@@ -1,3 +1,123 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── Theme color CSS variables (overridden by AppearanceContext) ── */
+:root {
+  --p50:  #eff6ff;
+  --p100: #dbeafe;
+  --p600: #2563eb;
+  --p700: #1d4ed8;
+  --p900: #1e3a8a;
+}
+
+.bg-primary-50  { background-color: var(--p50)  !important; }
+.bg-primary-100 { background-color: var(--p100) !important; }
+.bg-primary-600 { background-color: var(--p600) !important; }
+.hover\:bg-primary-700:hover { background-color: var(--p700) !important; }
+.text-primary-600 { color: var(--p600) !important; }
+.text-primary-900 { color: var(--p900) !important; }
+.border-primary-200 { border-color: var(--p100) !important; }
+.ring-primary-500 { --tw-ring-color: var(--p600) !important; }
+
+/* ── App-wide blue buttons follow theme color ── */
+.bg-blue-600               { background-color: var(--p600) !important; }
+.hover\:bg-blue-700:hover  { background-color: var(--p700) !important; }
+
+/* ── Dark mode global overrides ── */
+html.dark body                       { background-color: #111827; }
+html.dark .bg-white                  { background-color: #1f2937 !important; }
+html.dark .bg-gray-50                { background-color: #111827 !important; }
+html.dark .bg-gray-100               { background-color: #374151 !important; }
+html.dark .bg-gray-200               { background-color: #4b5563 !important; }
+html.dark .text-gray-900             { color: #f9fafb    !important; }
+html.dark .text-gray-800             { color: #f3f4f6    !important; }
+html.dark .text-gray-700             { color: #e5e7eb    !important; }
+html.dark .text-gray-600             { color: #d1d5db    !important; }
+html.dark .text-gray-500             { color: #9ca3af    !important; }
+html.dark .text-gray-400             { color: #6b7280    !important; }
+html.dark .border-gray-200           { border-color: #374151 !important; }
+html.dark .border-gray-100           { border-color: #1f2937 !important; }
+html.dark .hover\:bg-gray-50:hover   { background-color: #374151 !important; }
+html.dark .hover\:bg-gray-100:hover  { background-color: #4b5563 !important; }
+html.dark .shadow-sm                 { box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.4) !important; }
+
+/* ── Green (online / success) ── */
+html.dark .bg-green-50  { background-color: #052e16 !important; }
+html.dark .bg-green-100 { background-color: #14532d !important; }
+html.dark .text-green-700 { color: #86efac !important; }
+html.dark .text-green-600 { color: #4ade80 !important; }
+html.dark .text-green-800 { color: #bbf7d0 !important; }
+html.dark .text-green-500 { color: #4ade80 !important; }
+html.dark .border-green-100 { border-color: #14532d !important; }
+html.dark .border-green-200 { border-color: #166534 !important; }
+
+/* ── Red (error / danger) ── */
+html.dark .bg-red-50  { background-color: #450a0a !important; }
+html.dark .bg-red-100 { background-color: #7f1d1d !important; }
+html.dark .text-red-700 { color: #fca5a5 !important; }
+html.dark .text-red-600 { color: #f87171 !important; }
+html.dark .text-red-500 { color: #f87171 !important; }
+html.dark .text-red-900 { color: #fecaca !important; }
+html.dark .border-red-100 { border-color: #7f1d1d !important; }
+html.dark .border-red-200 { border-color: #991b1b !important; }
+
+/* ── Amber / Yellow (warning / pending) ── */
+html.dark .bg-amber-50  { background-color: #451a03 !important; }
+html.dark .bg-amber-100 { background-color: #78350f !important; }
+html.dark .text-amber-900 { color: #fde68a !important; }
+html.dark .text-amber-700 { color: #fcd34d !important; }
+html.dark .text-amber-600 { color: #fbbf24 !important; }
+html.dark .border-amber-200 { border-color: #92400e !important; }
+html.dark .bg-yellow-50  { background-color: #422006 !important; }
+html.dark .text-yellow-700 { color: #fde047 !important; }
+html.dark .text-yellow-600 { color: #facc15 !important; }
+html.dark .border-yellow-100 { border-color: #78350f !important; }
+html.dark .border-yellow-200 { border-color: #92400e !important; }
+
+/* ── Orange ── */
+html.dark .bg-orange-50  { background-color: #431407 !important; }
+html.dark .bg-orange-100 { background-color: #7c2d12 !important; }
+html.dark .text-orange-700 { color: #fdba74 !important; }
+html.dark .text-orange-600 { color: #fb923c !important; }
+html.dark .text-orange-500 { color: #f97316 !important; }
+html.dark .text-orange-400 { color: #fb923c !important; }
+html.dark .border-orange-100 { border-color: #7c2d12 !important; }
+html.dark .border-orange-200 { border-color: #9a3412 !important; }
+
+/* ── Purple ── */
+html.dark .bg-purple-50  { background-color: #2e1065 !important; }
+html.dark .bg-purple-100 { background-color: #4a1d96 !important; }
+html.dark .text-purple-700 { color: #d8b4fe !important; }
+html.dark .text-purple-600 { color: #c084fc !important; }
+html.dark .border-purple-100 { border-color: #4a1d96 !important; }
+html.dark .border-purple-200 { border-color: #6d28d9 !important; }
+
+/* ── Blue (info / selected) ── */
+html.dark .bg-blue-50  { background-color: #172554 !important; }
+html.dark .bg-blue-100 { background-color: #1e3a8a !important; }
+html.dark .bg-blue-200 { background-color: #1e40af !important; }
+html.dark .text-blue-700 { color: #93c5fd !important; }
+html.dark .text-blue-800 { color: #bfdbfe !important; }
+html.dark .text-blue-900 { color: #dbeafe !important; }
+html.dark .text-blue-600 { color: #60a5fa !important; }
+html.dark .text-blue-500 { color: #60a5fa !important; }
+html.dark .border-blue-200 { border-color: #1e40af !important; }
+html.dark .border-blue-100 { border-color: #1e3a8a !important; }
+
+/* ── Input / Select backgrounds ── */
+html.dark input,
+html.dark select,
+html.dark textarea {
+  background-color: #374151 !important;
+  border-color: #4b5563 !important;
+  color: #f9fafb !important;
+  color-scheme: dark;
+}
+html.dark input::placeholder { color: #6b7280 !important; }
+
+/* ── Tailwind opacity variants missed by class overrides ── */
+html.dark .bg-gray-50\/50                    { background-color: rgb(31 41 55 / 0.5) !important; }
+html.dark .hover\:bg-gray-50\/50:hover       { background-color: rgb(55 65 81 / 0.6) !important; }
+html.dark .divide-gray-100 > * + *           { border-color: #1f2937 !important; }
+html.dark .divide-y > * + *                  { border-color: #1f2937 !important; }
