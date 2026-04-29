@@ -4,8 +4,6 @@ Runs daily at 08:00 UTC and checks each company's notification settings.
 Sends a report in every requested format (PDF / Excel / CSV) when the
 company's chosen period (daily / weekly / monthly) matches today's date.
 """
-import csv
-import io
 import os
 import smtplib
 import ssl
@@ -17,10 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import models
 from database import AsyncSessionLocal
+from services.report_generator import generate_csv, generate_excel, generate_pdf
 
 
 # ---------------------------------------------------------------------------
-# Helpers – report generation
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _period_matches(period: str) -> bool:
@@ -28,9 +27,9 @@ def _period_matches(period: str) -> bool:
     if period == "daily":
         return True
     if period == "weekly":
-        return today.weekday() == 0          # Monday
+        return today.weekday() == 0   # Monday
     if period == "monthly":
-        return today.day == 1                # 1st of month
+        return today.day == 1         # 1st of month
     return False
 
 
@@ -56,85 +55,6 @@ async def _fetch_violations(db: AsyncSession, company_id: int, from_date: date, 
         .order_by(models.Violations.tarih_saat.desc())
     )
     return result.scalars().all()
-
-
-VIOLATION_LABELS = {"head": "No Helmet", "vest": "No Vest", "fallen": "Fall Detected"}
-HEADERS = ["ID", "Type", "Camera/Zone", "Worker ID", "Timestamp", "Status"]
-
-
-def _rows(violations):
-    return [
-        [
-            v.id,
-            VIOLATION_LABELS.get(v.ihlal_cesidi, v.ihlal_cesidi),
-            v.ihlal_yapilan_bolge or "-",
-            v.worker_id or "-",
-            v.tarih_saat.strftime("%Y-%m-%d %H:%M:%S") if v.tarih_saat else "-",
-            v.review_status or "pending",
-        ]
-        for v in violations
-    ]
-
-
-def _generate_csv(violations) -> bytes:
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(HEADERS)
-    writer.writerows(_rows(violations))
-    return buf.getvalue().encode("utf-8-sig")
-
-
-def _generate_excel(violations) -> bytes:
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Violations"
-    header_fill = PatternFill("solid", fgColor="2563EB")
-    for col, h in enumerate(HEADERS, 1):
-        cell = ws.cell(row=1, column=col, value=h)
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center")
-    for row_data in _rows(violations):
-        ws.append(row_data)
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
-def _generate_pdf(violations, company_code: str, from_date: date, to_date: date) -> bytes:
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib import colors
-    from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.styles import getSampleStyleSheet
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=15*mm, rightMargin=15*mm,
-                             topMargin=15*mm, bottomMargin=15*mm)
-    styles = getSampleStyleSheet()
-    elements = [
-        Paragraph(f"Safety Violations Report – {company_code}", styles["Title"]),
-        Paragraph(f"Period: {from_date} → {to_date}", styles["Normal"]),
-        Spacer(1, 8*mm),
-    ]
-    data = [HEADERS] + _rows(violations)
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563EB")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    elements.append(table)
-    doc.build(elements)
-    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +94,6 @@ def _send_email(to_addresses: list[str], subject: str, body: str, attachments: l
 async def send_scheduled_reports():
     print(f"[Scheduler] Running report job at {datetime.utcnow().isoformat()}")
     async with AsyncSessionLocal() as db:
-        # Load all notification settings with email enabled
         result = await db.execute(
             select(models.CompanyNotificationSettings)
             .where(models.CompanyNotificationSettings.email_enabled == True)
@@ -185,14 +104,12 @@ async def send_scheduled_reports():
             if not _period_matches(ns.report_period):
                 continue
 
-            # Get company
             company = await db.get(models.Company, ns.company_id)
             if not company:
                 continue
 
             from_date, to_date = _date_range_for_period(ns.report_period)
 
-            # Get recipient users (all active users of this company)
             users_result = await db.execute(
                 select(models.User).where(
                     models.User.company_id == ns.company_id,
@@ -211,19 +128,19 @@ async def send_scheduled_reports():
             if "csv" in formats:
                 attachments.append((
                     f"violations_{company.code}_{to_date}.csv",
-                    _generate_csv(violations),
+                    generate_csv(violations, company.code, from_date, to_date),
                     "text", "csv",
                 ))
             if "excel" in formats:
                 attachments.append((
                     f"violations_{company.code}_{to_date}.xlsx",
-                    _generate_excel(violations),
+                    generate_excel(violations, company.code, company.name, from_date, to_date),
                     "application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 ))
             if "pdf" in formats:
                 attachments.append((
                     f"violations_{company.code}_{to_date}.pdf",
-                    _generate_pdf(violations, company.code, from_date, to_date),
+                    generate_pdf(violations, company.code, company.name, from_date, to_date),
                     "application", "pdf",
                 ))
 
