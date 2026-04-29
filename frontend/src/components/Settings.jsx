@@ -134,94 +134,145 @@ export function Settings() {
               <p className="text-gray-500 text-sm">Configure how you receive alerts and notifications</p>
             </div>
 
-            <div className="space-y-6">
-              {/* Email */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                    <Mail className="w-5 h-5 text-blue-600" />
-                  </div>
-                  <div>
-                    <label className="text-gray-900 font-medium block">Email Notifications</label>
-                    <p className="text-gray-500 text-sm">Receive alerts via email</p>
-                  </div>
-                </div>
-                <Switch checked={emailNotifications} onCheckedChange={setEmailNotifications} />
-              </div>
+            {notifLoading ? (
+              <p className="text-gray-500 text-sm text-center py-8">Loading settings...</p>
+            ) : (
+              <div className="space-y-6">
 
-              <hr className="border-gray-100" />
-
-              {/* SMS (Eski Telegram Kısmı) */}
-              <div>
-                <div className="flex items-center justify-between mb-4">
+                {/* ── Email ── */}
+                <div>
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
-                        <Smartphone className="w-5 h-5 text-purple-600" />
+                      <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                        <Mail className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <label className="text-gray-900 font-medium block">Email Notifications</label>
+                        <p className="text-gray-500 text-sm">Receive scheduled reports via email</p>
+                      </div>
+                    </div>
+                    <Switch
+                      checked={notif.email_enabled}
+                      onCheckedChange={(v) => setNotifField('email_enabled', v)}
+                    />
+                  </div>
+
+                  {/* Email sub-options — shown only when enabled */}
+                  {notif.email_enabled && (
+                    <div className="mt-4 ml-14 p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-4">
+
+                      {/* Report Period */}
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 mb-2 block">Report Period</label>
+                        <div className="flex gap-3">
+                          {[
+                            { value: 'daily',   label: 'Daily' },
+                            { value: 'weekly',  label: 'Weekly' },
+                            { value: 'monthly', label: 'Monthly' },
+                          ].map(({ value, label }) => (
+                            <button
+                              key={value}
+                              onClick={() => setNotifField('report_period', value)}
+                              className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                                notif.report_period === value
+                                  ? 'bg-blue-600 text-white border-blue-600'
+                                  : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-xs text-gray-400 mt-1">
+                          {notif.report_period === 'daily'   && 'Sent every morning at 08:00 UTC'}
+                          {notif.report_period === 'weekly'  && 'Sent every Monday morning at 08:00 UTC'}
+                          {notif.report_period === 'monthly' && 'Sent on the 1st of each month at 08:00 UTC'}
+                        </p>
+                      </div>
+
+                      {/* Report Formats */}
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 mb-2 block">Report Format</label>
+                        <div className="flex gap-3">
+                          {['pdf', 'excel', 'csv'].map((fmt) => (
+                            <label key={fmt} className="flex items-center gap-2 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 accent-blue-600 rounded"
+                                checked={notif.report_formats.includes(fmt)}
+                                onChange={() => toggleFormat(fmt)}
+                              />
+                              <span className="text-sm text-gray-700 uppercase font-medium">{fmt}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-xs text-gray-400 mt-1">Select at least one format</p>
+                      </div>
+
+                    </div>
+                  )}
+                </div>
+
+                <hr className="border-gray-100" />
+
+                {/* ── Push ── */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
+                      <Bell className="w-5 h-5 text-orange-600" />
                     </div>
                     <div>
-                        <label className="text-gray-900 font-medium block">SMS Notifications</label>
-                        <p className="text-gray-500 text-sm">Get instant alerts via text message</p>
+                      <label className="text-gray-900 font-medium block">Push Notifications</label>
+                      <p className="text-gray-500 text-sm">Browser push notifications</p>
                     </div>
-                    </div>
-                    <Switch checked={smsNotifications} onCheckedChange={setSmsNotifications} />
-                </div>
-
-                {smsNotifications && (
-                    <div className="ml-14 p-4 bg-gray-50 rounded-lg space-y-3 border border-gray-200">
-                        <div>
-                            <label className="text-sm font-medium text-gray-700 mb-1 block">Phone Number</label>
-                            <input type="tel" placeholder="+90 5XX XXX XX XX" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                            <p className="text-xs text-gray-500 mt-1">International format required (e.g., +90)</p>
-                        </div>
-                        <div>
-                            <label className="text-sm font-medium text-gray-700 mb-1 block">Provider API Key (Twilio/Netgsm)</label>
-                            <input type="password" placeholder="Enter API Key" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                        </div>
-                    </div>
-                )}
-              </div>
-
-              <hr className="border-gray-100" />
-
-              {/* Push */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
-                    <Bell className="w-5 h-5 text-orange-600" />
                   </div>
-                  <div>
-                    <label className="text-gray-900 font-medium block">Push Notifications</label>
-                    <p className="text-gray-500 text-sm">Browser push notifications</p>
+                  <Switch
+                    checked={notif.push_enabled}
+                    onCheckedChange={(v) => setNotifField('push_enabled', v)}
+                  />
+                </div>
+
+                <hr className="border-gray-100" />
+
+                {/* ── Alert Preferences ── */}
+                <div className="space-y-4 pt-2">
+                  <h4 className="text-gray-900 font-semibold">Alert Preferences</h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-gray-700 text-sm">Critical Violations</label>
+                      <Switch
+                        checked={notif.alert_critical}
+                        onCheckedChange={(v) => setNotifField('alert_critical', v)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <label className="text-gray-700 text-sm">Camera Offline</label>
+                      <Switch
+                        checked={notif.alert_camera_offline}
+                        onCheckedChange={(v) => setNotifField('alert_camera_offline', v)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <label className="text-gray-700 text-sm">Model Updates</label>
+                      <Switch
+                        checked={notif.alert_model_updates}
+                        onCheckedChange={(v) => setNotifField('alert_model_updates', v)}
+                      />
+                    </div>
                   </div>
                 </div>
-                <Switch checked={pushNotifications} onCheckedChange={setPushNotifications} />
+
+                <button
+                  onClick={handleSaveNotif}
+                  disabled={notifSaving}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors"
+                >
+                  <Save className="w-4 h-4" />
+                  {notifSaving ? 'Saving…' : 'Save Notification Settings'}
+                </button>
+
               </div>
-
-              <hr className="border-gray-100" />
-
-              {/* Alert Preferences */}
-              <div className="space-y-4 pt-2">
-                <h4 className="text-gray-900 font-semibold">Alert Preferences</h4>
-                <div className="space-y-3">
-                    {[
-                        { label: 'Critical Violations', default: true },
-                        { label: 'Camera Offline', default: true },
-                        { label: 'Model Updates', default: false },
-                        { label: 'Daily Reports', default: true }
-                    ].map((pref, i) => (
-                        <div key={i} className="flex items-center justify-between">
-                            <label className="text-gray-700 text-sm">{pref.label}</label>
-                            <Switch checked={pref.default} onCheckedChange={()=>{}} />
-                        </div>
-                    ))}
-                </div>
-              </div>
-
-              <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors">
-                <Save className="w-4 h-4" />
-                Save Notification Settings
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}
