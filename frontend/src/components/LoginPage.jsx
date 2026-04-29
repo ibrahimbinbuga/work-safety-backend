@@ -58,7 +58,7 @@ export default function LoginPage({ onLoginSuccess }) {
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h1>🔒 W.S.A.</h1>
+          <h1>🔒 SafetyWatch</h1>
           <p>Workplace Safety Monitoring System</p>
         </div>
 

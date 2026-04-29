@@ -1,16 +1,85 @@
-import { useState } from 'react';
-import { Bell, Mail, Smartphone, Camera, Users, Shield, Moon, Sun, Save } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Bell, Mail, Users, Moon, Sun, Save } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useAppearance } from '../context/AppearanceContext';
+import { apiClient } from '../utils/api';
+
+const DEFAULT_NOTIF = {
+  email_enabled: false,
+  report_period: 'weekly',
+  report_formats: ['pdf'],
+  push_enabled: true,
+  alert_critical: true,
+  alert_camera_offline: true,
+  alert_model_updates: false,
+};
 
 export function Settings() {
   const { isAdmin, activeCompanyCode } = useAuth();
-  const [activeTab, setActiveTab] = useState('notifications');
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  
-  // Notification States
-  const [emailNotifications, setEmailNotifications] = useState(true);
-  const [smsNotifications, setSmsNotifications] = useState(false); // Telegram -> SMS oldu
-  const [pushNotifications, setPushNotifications] = useState(true);
+  const { settings: appearance, updateSetting, COLOR_VARS } = useAppearance();
+  const [activeTab, setActiveTab] = useState(isAdmin ? 'appearance' : 'notifications');
+  const [users, setUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+
+  // Notification state
+  const [notif, setNotif] = useState(DEFAULT_NOTIF);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifSaving, setNotifSaving] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== 'users' || !activeCompanyCode) return;
+    setUsersLoading(true);
+    apiClient
+      .get(`/api/admin/users?company_code=${encodeURIComponent(activeCompanyCode)}`)
+      .then((res) => setUsers(res.data))
+      .catch(() => setUsers([]))
+      .finally(() => setUsersLoading(false));
+  }, [activeTab, activeCompanyCode]);
+
+  useEffect(() => {
+    if (activeTab !== 'notifications' || !activeCompanyCode) return;
+    setNotifLoading(true);
+    apiClient
+      .get(`/api/company/${encodeURIComponent(activeCompanyCode)}/notification-settings`)
+      .then((res) => setNotif(res.data))
+      .catch(() => setNotif(DEFAULT_NOTIF))
+      .finally(() => setNotifLoading(false));
+  }, [activeTab, activeCompanyCode]);
+
+  const handleSaveNotif = async () => {
+    setNotifSaving(true);
+    try {
+      const res = await apiClient.put(
+        `/api/company/${encodeURIComponent(activeCompanyCode)}/notification-settings`,
+        notif
+      );
+      setNotif(res.data);
+    } catch {
+      // keep existing state
+    } finally {
+      setNotifSaving(false);
+    }
+  };
+
+  const setNotifField = (field, value) => setNotif((prev) => ({ ...prev, [field]: value }));
+
+  const toggleFormat = (fmt) => {
+    setNotif((prev) => {
+      const formats = prev.report_formats.includes(fmt)
+        ? prev.report_formats.filter((f) => f !== fmt)
+        : [...prev.report_formats, fmt];
+      return { ...prev, report_formats: formats.length ? formats : [fmt] };
+    });
+  };
+
+  const handleAddUser = () => {
+    const to = 'developmentifd@gmail.com';
+    const subject = encodeURIComponent(`Kullanıcı Ekleme Talebi - ${activeCompanyCode}`);
+    const body = encodeURIComponent(
+      `${activeCompanyCode} şirketimize [kullanıcı_emaili] mailinde [şifre] şifreli bir kullanıcı eklemek istiyoruz.`
+    );
+    window.location.href = `mailto:${to}?subject=${subject}&body=${body}`;
+  };
 
   // Toggle Switch Bileşeni (Custom)
   const Switch = ({ checked, onCheckedChange }) => (
@@ -26,29 +95,21 @@ export function Settings() {
     </button>
   );
 
-  // Admin control - must select a company before viewing settings
-  if (isAdmin && !activeCompanyCode) {
-    return (
-      <div className="space-y-6 p-6">
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
-          <p className="text-amber-900 text-lg font-semibold">⚠️ Please select a company from the sidebar.</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
       <div>
         <h2 className="text-2xl font-bold text-gray-900">Settings</h2>
-        <p className="text-gray-500 text-sm mt-1">Manage your system preferences and configurations</p>
+        <p className="text-gray-500 text-sm mt-1">
+          {isAdmin ? 'Manage your personal preferences' : 'Manage your system preferences and configurations'}
+        </p>
       </div>
 
       {/* Tabs Navigation */}
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex space-x-8">
-          {['notifications', 'cameras', 'users', 'appearance'].map((tab) => (
+          {(isAdmin ? ['appearance'] : ['notifications', 'users', 'appearance']).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -65,7 +126,7 @@ export function Settings() {
       </div>
 
       {/* --- NOTIFICATIONS TAB --- */}
-      {activeTab === 'notifications' && (
+      {!isAdmin && activeTab === 'notifications' && (
         <div className="space-y-6 max-w-4xl">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <div className="mb-6">
@@ -165,137 +226,43 @@ export function Settings() {
         </div>
       )}
 
-      {/* --- CAMERAS TAB --- */}
-      {activeTab === 'cameras' && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-4xl">
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-gray-900">Camera Connection Settings</h3>
-              <p className="text-gray-500 text-sm">Configure camera connection parameters</p>
-            </div>
-
-            <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                        <label className="text-sm font-medium text-gray-700 mb-1 block">Default Video Protocol</label>
-                        <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                            <option>RTSP</option>
-                            <option>HTTP</option>
-                            <option>RTMP</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label className="text-sm font-medium text-gray-700 mb-1 block">Frame Rate (FPS)</label>
-                        <input type="number" defaultValue={30} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                    </div>
-                    <div>
-                        <label className="text-sm font-medium text-gray-700 mb-1 block">Resolution</label>
-                        <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                            <option>1920x1080 (Full HD)</option>
-                            <option>1280x720 (HD)</option>
-                            <option>640x480 (SD)</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label className="text-sm font-medium text-gray-700 mb-1 block">Recording Buffer (minutes)</label>
-                        <input type="number" defaultValue={5} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                    </div>
-                </div>
-
-                <hr className="border-gray-100" />
-
-                <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                        <label className="text-gray-700 text-sm font-medium">Auto Reconnect</label>
-                        <Switch checked={true} onCheckedChange={()=>{}} />
-                    </div>
-                    <div className="flex items-center justify-between">
-                        <label className="text-gray-700 text-sm font-medium">Motion Detection Only</label>
-                        <Switch checked={false} onCheckedChange={()=>{}} />
-                    </div>
-                    <div className="flex items-center justify-between">
-                        <label className="text-gray-700 text-sm font-medium">Night Vision Enhancement</label>
-                        <Switch checked={true} onCheckedChange={()=>{}} />
-                    </div>
-                </div>
-
-                <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors">
-                    <Save className="w-4 h-4" />
-                    Save Camera Settings
-                </button>
-            </div>
-        </div>
-      )}
-
-      {/* --- USERS TAB --- */}
-      {activeTab === 'users' && (
+{/* --- USERS TAB --- */}
+      {!isAdmin && activeTab === 'users' && (
         <div className="space-y-6 max-w-4xl">
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="flex items-center justify-between mb-6">
                     <div>
                         <h3 className="text-lg font-bold text-gray-900">User Management</h3>
-                        <p className="text-gray-500 text-sm">Manage users and their roles</p>
+                        <p className="text-gray-500 text-sm">Manage users</p>
                     </div>
-                    <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors">
+                    <button
+                        onClick={handleAddUser}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors"
+                    >
                         <Users className="w-4 h-4" />
                         Add User
                     </button>
                 </div>
 
                 <div className="space-y-3">
-                    {[
-                        { name: 'Admin User', email: 'admin@safetywatch.com', role: 'Administrator', active: true },
-                        { name: 'John Doe', email: 'john@safetywatch.com', role: 'Supervisor', active: true },
-                        { name: 'Jane Smith', email: 'jane@safetywatch.com', role: 'Viewer', active: true },
-                        { name: 'Mike Johnson', email: 'mike@safetywatch.com', role: 'Viewer', active: false },
-                    ].map((user, index) => (
-                        <div key={index} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                            <div className="flex items-center gap-4">
-                                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
-                                    <Users className="w-5 h-5" />
+                    {usersLoading ? (
+                        <p className="text-gray-500 text-sm text-center py-6">Loading users...</p>
+                    ) : users.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-6">No users found for this company.</p>
+                    ) : (
+                        users.map((user) => (
+                            <div key={user.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                                <div className="flex items-center gap-4">
+                                    <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+                                        <Users className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <p className="text-gray-900 font-medium">{user.email}</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="text-gray-900 font-medium">{user.name}</p>
-                                    <p className="text-gray-500 text-sm">{user.email}</p>
-                                </div>
                             </div>
-                            <div className="flex items-center gap-6">
-                                <div className="flex items-center gap-2 px-3 py-1 bg-gray-100 rounded-full">
-                                    <Shield className="w-3 h-3 text-gray-500" />
-                                    <span className="text-gray-700 text-xs font-medium">{user.role}</span>
-                                </div>
-                                <Switch checked={user.active} onCheckedChange={()=>{}} />
-                                <button className="text-gray-500 hover:text-blue-600 text-sm font-medium">Edit</button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                <div className="mb-6">
-                    <h3 className="text-lg font-bold text-gray-900">Role Permissions</h3>
-                    <p className="text-gray-500 text-sm">Configure permissions for each role</p>
-                </div>
-                <div className="space-y-4">
-                    {[
-                        { role: 'Administrator', permissions: ['Full Access', 'User Management', 'System Settings'] },
-                        { role: 'Supervisor', permissions: ['View Violations', 'Manage Cameras', 'Generate Reports'] },
-                        { role: 'Viewer', permissions: ['View Cameras', 'View Violations'] },
-                    ].map((role, index) => (
-                        <div key={index} className="p-4 border border-gray-200 rounded-lg">
-                            <div className="flex items-center justify-between mb-3">
-                                <h4 className="text-gray-900 font-semibold">{role.role}</h4>
-                                <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">Edit Permissions</button>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                                {role.permissions.map((permission, pIndex) => (
-                                    <span key={pIndex} className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-xs font-medium border border-blue-100">
-                                        {permission}
-                                    </span>
-                                ))}
-                            </div>
-                        </div>
-                    ))}
+                        ))
+                    )}
                 </div>
             </div>
         </div>
@@ -310,59 +277,44 @@ export function Settings() {
             </div>
 
             <div className="space-y-6">
+                {/* Dark Mode */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4">
                         <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center text-gray-600">
-                            {isDarkMode ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
+                            {appearance.isDarkMode ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
                         </div>
                         <div>
                             <label className="text-gray-900 font-medium block">Dark Mode</label>
                             <p className="text-gray-500 text-sm">Switch between light and dark themes</p>
                         </div>
                     </div>
-                    <Switch checked={isDarkMode} onCheckedChange={setIsDarkMode} />
+                    <Switch
+                        checked={appearance.isDarkMode}
+                        onCheckedChange={(v) => updateSetting('isDarkMode', v)}
+                    />
                 </div>
 
                 <hr className="border-gray-100" />
 
+                {/* Theme Color */}
                 <div>
                     <label className="text-sm font-medium text-gray-700 mb-3 block">Theme Color</label>
-                    <div className="grid grid-cols-6 gap-3 max-w-sm">
-                        {['bg-blue-600', 'bg-green-600', 'bg-purple-600', 'bg-orange-600', 'bg-red-600', 'bg-pink-600'].map((color, index) => (
+                    <div className="flex gap-3">
+                        {Object.entries(COLOR_VARS).map(([name, vars]) => (
                             <button
-                                key={index}
-                                className={`${color} h-10 rounded-lg border-2 ${index === 0 ? 'border-gray-900 ring-2 ring-gray-200' : 'border-transparent'} hover:scale-105 transition-transform`}
+                                key={name}
+                                onClick={() => updateSetting('themeColor', name)}
+                                style={{ backgroundColor: vars.p600 }}
+                                className={`w-10 h-10 rounded-lg border-2 hover:scale-105 transition-transform ${
+                                    appearance.themeColor === name
+                                        ? 'border-gray-900 ring-2 ring-gray-300'
+                                        : 'border-transparent'
+                                }`}
                             />
                         ))}
                     </div>
                 </div>
 
-                <hr className="border-gray-100" />
-
-                <div>
-                    <label className="text-sm font-medium text-gray-700 mb-2 block">Dashboard Layout</label>
-                    <select className="w-full max-w-xs px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                        <option>Compact</option>
-                        <option>Standard</option>
-                        <option>Spacious</option>
-                    </select>
-                </div>
-
-                <div className="space-y-4 pt-2">
-                    <div className="flex items-center justify-between max-w-xs">
-                        <label className="text-gray-700 text-sm font-medium">Enable Animations</label>
-                        <Switch checked={true} onCheckedChange={()=>{}} />
-                    </div>
-                    <div className="flex items-center justify-between max-w-xs">
-                        <label className="text-gray-700 text-sm font-medium">Compact Sidebar</label>
-                        <Switch checked={false} onCheckedChange={()=>{}} />
-                    </div>
-                </div>
-
-                <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors">
-                    <Save className="w-4 h-4" />
-                    Save Appearance Settings
-                </button>
             </div>
         </div>
       )}

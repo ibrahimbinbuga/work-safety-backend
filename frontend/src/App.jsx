@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/Sidebar';
 import { TopNav } from './components/TopNav';
 import LoginPage from './components/LoginPage';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { AppearanceProvider } from './context/AppearanceContext';
 
 // Diğer bileşenler henüz boşsa hata vermemesi için basitçe import edelim
 // Eğer yukarıdaki 4. adımı yaptıysan bu importları açabilirsin:
@@ -105,7 +106,9 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <AppearanceProvider>
+        <AppContent />
+      </AppearanceProvider>
     </AuthProvider>
   );
 }
