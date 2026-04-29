@@ -1,8 +1,9 @@
 """Scheduled automatic report emailer.
 
-Runs daily at 08:00 UTC and checks each company's notification settings.
-Sends a report in every requested format (PDF / Excel / CSV) when the
-company's chosen period (daily / weekly / monthly) matches today's date.
+Three separate jobs, each fired at period-end:
+  - Daily   → every day at 23:00 UTC      (covers today)
+  - Weekly  → every Friday at 23:00 UTC   (covers Mon–Fri of the current week)
+  - Monthly → last day of month 23:00 UTC (covers 1st – last day of month)
 """
 import os
 import smtplib
@@ -19,96 +20,51 @@ from services.report_generator import generate_csv, generate_excel, generate_pdf
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Date ranges
 # ---------------------------------------------------------------------------
-
-def _period_matches(period: str) -> bool:
-    today = datetime.utcnow()
-    if period == "daily":
-        return True
-    if period == "weekly":
-        return today.weekday() == 0   # Monday
-    if period == "monthly":
-        return today.day == 1         # 1st of month
-    return False
-
 
 def _date_range_for_period(period: str):
+    """Return (from_date, to_date) covering the period that just ended."""
     today = date.today()
     if period == "daily":
-        return today - timedelta(days=1), today
+        # Full current day
+        return today, today
     if period == "weekly":
-        return today - timedelta(days=7), today
-    return (today.replace(day=1) - timedelta(days=1)).replace(day=1), today
-
-
-async def _fetch_violations(db: AsyncSession, company_id: int, from_date: date, to_date: date):
-    result = await db.execute(
-        select(models.Violations)
-        .where(
-            and_(
-                models.Violations.company_id == company_id,
-                models.Violations.tarih_saat >= datetime.combine(from_date, time.min),
-                models.Violations.tarih_saat <= datetime.combine(to_date, time.max),
-            )
-        )
-        .order_by(models.Violations.tarih_saat.desc())
-    )
-    return result.scalars().all()
+        # Monday → Friday (current week)
+        monday = today - timedelta(days=today.weekday())  # weekday() == 4 (Fri) when job runs
+        return monday, today
+    # monthly: 1st → last day of current month
+    return today.replace(day=1), today
 
 
 # ---------------------------------------------------------------------------
-# Email sender
+# Core sender (reusable for all periods)
 # ---------------------------------------------------------------------------
 
-def _send_email(to_addresses: list[str], subject: str, body: str, attachments: list[tuple]):
-    smtp_host = os.getenv("SMTP_HOST", "")
-    smtp_port = int(os.getenv("SMTP_PORT", 587))
-    smtp_user = os.getenv("SMTP_USER", "")
-    smtp_password = os.getenv("SMTP_PASSWORD", "")
-    smtp_from = os.getenv("SMTP_FROM", smtp_user)
+async def _send_reports_for_period(period: str):
+    period_label = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}[period]
+    print(f"[Scheduler] Running {period_label} report job at {datetime.utcnow().isoformat()}")
 
-    if not smtp_host or not smtp_user:
-        print("[Scheduler] SMTP not configured – skipping email")
-        return
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = smtp_from
-    msg["To"] = ", ".join(to_addresses)
-    msg.set_content(body)
-
-    for filename, data, mime_main, mime_sub in attachments:
-        msg.add_attachment(data, maintype=mime_main, subtype=mime_sub, filename=filename)
-
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-        server.starttls(context=ssl.create_default_context())
-        server.login(smtp_user, smtp_password)
-        server.send_message(msg)
-
-
-# ---------------------------------------------------------------------------
-# Main scheduled job
-# ---------------------------------------------------------------------------
-
-async def send_scheduled_reports():
-    print(f"[Scheduler] Running report job at {datetime.utcnow().isoformat()}")
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(models.CompanyNotificationSettings)
-            .where(models.CompanyNotificationSettings.email_enabled == True)
+            .where(
+                models.CompanyNotificationSettings.email_enabled == True,
+                models.CompanyNotificationSettings.report_period == period,
+            )
         )
         all_settings = result.scalars().all()
 
-        for ns in all_settings:
-            if not _period_matches(ns.report_period):
-                continue
+        if not all_settings:
+            print(f"[Scheduler] No companies configured for {period_label} reports, skipping.")
+            return
 
+        from_date, to_date = _date_range_for_period(period)
+
+        for ns in all_settings:
             company = await db.get(models.Company, ns.company_id)
             if not company:
                 continue
-
-            from_date, to_date = _date_range_for_period(ns.report_period)
 
             users_result = await db.execute(
                 select(models.User).where(
@@ -144,7 +100,6 @@ async def send_scheduled_reports():
                     "application", "pdf",
                 ))
 
-            period_label = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}[ns.report_period]
             subject = f"SafetyWatch {period_label} Report – {company.code}"
             body = (
                 f"Hello,\n\n"
@@ -160,3 +115,72 @@ async def send_scheduled_reports():
                 print(f"[Scheduler] Sent {period_label} report for {company.code} to {recipients}")
             except Exception as exc:
                 print(f"[Scheduler] Failed to send report for {company.code}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Public job functions (called by APScheduler)
+# ---------------------------------------------------------------------------
+
+async def send_daily_reports():
+    await _send_reports_for_period("daily")
+
+
+async def send_weekly_reports():
+    await _send_reports_for_period("weekly")
+
+
+async def send_monthly_reports():
+    await _send_reports_for_period("monthly")
+
+
+# Legacy: still usable from test endpoint
+async def send_scheduled_reports():
+    """Trigger all three periods at once (used for manual testing)."""
+    await _send_reports_for_period("daily")
+    await _send_reports_for_period("weekly")
+    await _send_reports_for_period("monthly")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+async def _fetch_violations(db: AsyncSession, company_id: int, from_date: date, to_date: date):
+    result = await db.execute(
+        select(models.Violations)
+        .where(
+            and_(
+                models.Violations.company_id == company_id,
+                models.Violations.tarih_saat >= datetime.combine(from_date, time.min),
+                models.Violations.tarih_saat <= datetime.combine(to_date, time.max),
+            )
+        )
+        .order_by(models.Violations.tarih_saat.desc())
+    )
+    return result.scalars().all()
+
+
+def _send_email(to_addresses: list[str], subject: str, body: str, attachments: list[tuple]):
+    smtp_host = os.getenv("SMTP_HOST", "")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+    smtp_from = os.getenv("SMTP_FROM", smtp_user)
+
+    if not smtp_host or not smtp_user:
+        print("[Scheduler] SMTP not configured – skipping email")
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = smtp_from
+    msg["To"] = ", ".join(to_addresses)
+    msg.set_content(body)
+
+    for filename, data, mime_main, mime_sub in attachments:
+        msg.add_attachment(data, maintype=mime_main, subtype=mime_sub, filename=filename)
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+        server.starttls(context=ssl.create_default_context())
+        server.login(smtp_user, smtp_password)
+        server.send_message(msg)
