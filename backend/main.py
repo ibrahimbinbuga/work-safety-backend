@@ -14,7 +14,7 @@ from routes import auth, cameras, detections, users, reports, notifications
 from routes import models as models_router
 from services.model_service import ensure_company_model_cameras_schema
 from services.violation_service import violation_consumer_task
-from services.report_scheduler import send_scheduled_reports
+from services.report_scheduler import send_daily_reports, send_weekly_reports, send_monthly_reports
 
 load_dotenv()
 
@@ -77,9 +77,14 @@ async def startup_event():
     g.violation_queue = asyncio.Queue()
     g.consumer_task = asyncio.create_task(violation_consumer_task(g.violation_queue))
 
-    scheduler.add_job(send_scheduled_reports, "cron", hour=8, minute=0, id="daily_reports")
+    # Daily   → every day at 17:30 Turkey time (14:30 UTC)
+    scheduler.add_job(send_daily_reports,   "cron", hour=14, minute=30, id="daily_reports")
+    # Weekly  → every Friday at 17:30 Turkey time (14:30 UTC)
+    scheduler.add_job(send_weekly_reports,  "cron", day_of_week="fri", hour=14, minute=30, id="weekly_reports")
+    # Monthly → last day of each month at 17:30 Turkey time (14:30 UTC)
+    scheduler.add_job(send_monthly_reports, "cron", day="last", hour=14, minute=30, id="monthly_reports")
     scheduler.start()
-    print("[startup] Report scheduler started (daily at 08:00 UTC).")
+    print("[startup] Report scheduler started (daily/weekly/monthly @ 17:30 TR / 14:30 UTC).")
 
     print("[startup] Camera auto-start disabled. Waiting for login/company selection trigger.")
 

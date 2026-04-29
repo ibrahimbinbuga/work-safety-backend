@@ -1,11 +1,10 @@
 """Scheduled automatic report emailer.
 
-Runs daily at 08:00 UTC and checks each company's notification settings.
-Sends a report in every requested format (PDF / Excel / CSV) when the
-company's chosen period (daily / weekly / monthly) matches today's date.
+Three separate jobs, each fired at period-end:
+  - Daily   → every day at 23:00 UTC      (covers today)
+  - Weekly  → every Friday at 23:00 UTC   (covers Mon–Fri of the current week)
+  - Monthly → last day of month 23:00 UTC (covers 1st – last day of month)
 """
-import csv
-import io
 import os
 import smtplib
 import ssl
@@ -17,31 +16,134 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import models
 from database import AsyncSessionLocal
+from services.report_generator import generate_csv, generate_excel, generate_pdf
 
 
 # ---------------------------------------------------------------------------
-# Helpers – report generation
+# Date ranges
 # ---------------------------------------------------------------------------
-
-def _period_matches(period: str) -> bool:
-    today = datetime.utcnow()
-    if period == "daily":
-        return True
-    if period == "weekly":
-        return today.weekday() == 0          # Monday
-    if period == "monthly":
-        return today.day == 1                # 1st of month
-    return False
-
 
 def _date_range_for_period(period: str):
+    """Return (from_date, to_date) covering the period that just ended."""
     today = date.today()
     if period == "daily":
-        return today - timedelta(days=1), today
+        # Full current day
+        return today, today
     if period == "weekly":
-        return today - timedelta(days=7), today
-    return (today.replace(day=1) - timedelta(days=1)).replace(day=1), today
+        # Monday → Friday (current week)
+        monday = today - timedelta(days=today.weekday())  # weekday() == 4 (Fri) when job runs
+        return monday, today
+    # monthly: 1st → last day of current month
+    return today.replace(day=1), today
 
+
+# ---------------------------------------------------------------------------
+# Core sender (reusable for all periods)
+# ---------------------------------------------------------------------------
+
+async def _send_reports_for_period(period: str):
+    period_label = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}[period]
+    print(f"[Scheduler] Running {period_label} report job at {datetime.utcnow().isoformat()}")
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.CompanyNotificationSettings)
+            .where(
+                models.CompanyNotificationSettings.email_enabled == True,
+                models.CompanyNotificationSettings.report_period == period,
+            )
+        )
+        all_settings = result.scalars().all()
+
+        if not all_settings:
+            print(f"[Scheduler] No companies configured for {period_label} reports, skipping.")
+            return
+
+        from_date, to_date = _date_range_for_period(period)
+
+        for ns in all_settings:
+            company = await db.get(models.Company, ns.company_id)
+            if not company:
+                continue
+
+            users_result = await db.execute(
+                select(models.User).where(
+                    models.User.company_id == ns.company_id,
+                    models.User.is_active == True,
+                )
+            )
+            recipients = [u.email for u in users_result.scalars().all()]
+            if not recipients:
+                print(f"[Scheduler] No active users for {company.code}, skipping")
+                continue
+
+            violations = await _fetch_violations(db, ns.company_id, from_date, to_date)
+            formats = ns.report_formats or ["pdf"]
+            attachments = []
+
+            if "csv" in formats:
+                attachments.append((
+                    f"violations_{company.code}_{to_date}.csv",
+                    generate_csv(violations, company.code, from_date, to_date),
+                    "text", "csv",
+                ))
+            if "excel" in formats:
+                attachments.append((
+                    f"violations_{company.code}_{to_date}.xlsx",
+                    generate_excel(violations, company.code, company.name, from_date, to_date),
+                    "application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ))
+            if "pdf" in formats:
+                attachments.append((
+                    f"violations_{company.code}_{to_date}.pdf",
+                    generate_pdf(violations, company.code, company.name, from_date, to_date),
+                    "application", "pdf",
+                ))
+
+            subject = f"SafetyWatch {period_label} Report – {company.code}"
+            body = (
+                f"Hello,\n\n"
+                f"Please find attached the {period_label.lower()} safety violations report "
+                f"for {company.name} ({company.code}).\n"
+                f"Period: {from_date} → {to_date}\n"
+                f"Total violations: {len(violations)}\n\n"
+                f"Best regards,\nSafetyWatch"
+            )
+
+            try:
+                _send_email(recipients, subject, body, attachments)
+                print(f"[Scheduler] Sent {period_label} report for {company.code} to {recipients}")
+            except Exception as exc:
+                print(f"[Scheduler] Failed to send report for {company.code}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Public job functions (called by APScheduler)
+# ---------------------------------------------------------------------------
+
+async def send_daily_reports():
+    await _send_reports_for_period("daily")
+
+
+async def send_weekly_reports():
+    await _send_reports_for_period("weekly")
+
+
+async def send_monthly_reports():
+    await _send_reports_for_period("monthly")
+
+
+# Legacy: still usable from test endpoint
+async def send_scheduled_reports():
+    """Trigger all three periods at once (used for manual testing)."""
+    await _send_reports_for_period("daily")
+    await _send_reports_for_period("weekly")
+    await _send_reports_for_period("monthly")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 async def _fetch_violations(db: AsyncSession, company_id: int, from_date: date, to_date: date):
     result = await db.execute(
@@ -57,89 +159,6 @@ async def _fetch_violations(db: AsyncSession, company_id: int, from_date: date, 
     )
     return result.scalars().all()
 
-
-VIOLATION_LABELS = {"head": "No Helmet", "vest": "No Vest", "fallen": "Fall Detected"}
-HEADERS = ["ID", "Type", "Camera/Zone", "Worker ID", "Timestamp", "Status"]
-
-
-def _rows(violations):
-    return [
-        [
-            v.id,
-            VIOLATION_LABELS.get(v.ihlal_cesidi, v.ihlal_cesidi),
-            v.ihlal_yapilan_bolge or "-",
-            v.worker_id or "-",
-            v.tarih_saat.strftime("%Y-%m-%d %H:%M:%S") if v.tarih_saat else "-",
-            v.review_status or "pending",
-        ]
-        for v in violations
-    ]
-
-
-def _generate_csv(violations) -> bytes:
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(HEADERS)
-    writer.writerows(_rows(violations))
-    return buf.getvalue().encode("utf-8-sig")
-
-
-def _generate_excel(violations) -> bytes:
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Violations"
-    header_fill = PatternFill("solid", fgColor="2563EB")
-    for col, h in enumerate(HEADERS, 1):
-        cell = ws.cell(row=1, column=col, value=h)
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center")
-    for row_data in _rows(violations):
-        ws.append(row_data)
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
-def _generate_pdf(violations, company_code: str, from_date: date, to_date: date) -> bytes:
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib import colors
-    from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.styles import getSampleStyleSheet
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=15*mm, rightMargin=15*mm,
-                             topMargin=15*mm, bottomMargin=15*mm)
-    styles = getSampleStyleSheet()
-    elements = [
-        Paragraph(f"Safety Violations Report – {company_code}", styles["Title"]),
-        Paragraph(f"Period: {from_date} → {to_date}", styles["Normal"]),
-        Spacer(1, 8*mm),
-    ]
-    data = [HEADERS] + _rows(violations)
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2563EB")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F4F6")]),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    elements.append(table)
-    doc.build(elements)
-    return buf.getvalue()
-
-
-# ---------------------------------------------------------------------------
-# Email sender
-# ---------------------------------------------------------------------------
 
 def _send_email(to_addresses: list[str], subject: str, body: str, attachments: list[tuple]):
     smtp_host = os.getenv("SMTP_HOST", "")
@@ -165,81 +184,3 @@ def _send_email(to_addresses: list[str], subject: str, body: str, attachments: l
         server.starttls(context=ssl.create_default_context())
         server.login(smtp_user, smtp_password)
         server.send_message(msg)
-
-
-# ---------------------------------------------------------------------------
-# Main scheduled job
-# ---------------------------------------------------------------------------
-
-async def send_scheduled_reports():
-    print(f"[Scheduler] Running report job at {datetime.utcnow().isoformat()}")
-    async with AsyncSessionLocal() as db:
-        # Load all notification settings with email enabled
-        result = await db.execute(
-            select(models.CompanyNotificationSettings)
-            .where(models.CompanyNotificationSettings.email_enabled == True)
-        )
-        all_settings = result.scalars().all()
-
-        for ns in all_settings:
-            if not _period_matches(ns.report_period):
-                continue
-
-            # Get company
-            company = await db.get(models.Company, ns.company_id)
-            if not company:
-                continue
-
-            from_date, to_date = _date_range_for_period(ns.report_period)
-
-            # Get recipient users (all active users of this company)
-            users_result = await db.execute(
-                select(models.User).where(
-                    models.User.company_id == ns.company_id,
-                    models.User.is_active == True,
-                )
-            )
-            recipients = [u.email for u in users_result.scalars().all()]
-            if not recipients:
-                print(f"[Scheduler] No active users for {company.code}, skipping")
-                continue
-
-            violations = await _fetch_violations(db, ns.company_id, from_date, to_date)
-            formats = ns.report_formats or ["pdf"]
-            attachments = []
-
-            if "csv" in formats:
-                attachments.append((
-                    f"violations_{company.code}_{to_date}.csv",
-                    _generate_csv(violations),
-                    "text", "csv",
-                ))
-            if "excel" in formats:
-                attachments.append((
-                    f"violations_{company.code}_{to_date}.xlsx",
-                    _generate_excel(violations),
-                    "application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                ))
-            if "pdf" in formats:
-                attachments.append((
-                    f"violations_{company.code}_{to_date}.pdf",
-                    _generate_pdf(violations, company.code, from_date, to_date),
-                    "application", "pdf",
-                ))
-
-            period_label = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}[ns.report_period]
-            subject = f"SafetyWatch {period_label} Report – {company.code}"
-            body = (
-                f"Hello,\n\n"
-                f"Please find attached the {period_label.lower()} safety violations report "
-                f"for {company.name} ({company.code}).\n"
-                f"Period: {from_date} → {to_date}\n"
-                f"Total violations: {len(violations)}\n\n"
-                f"Best regards,\nSafetyWatch"
-            )
-
-            try:
-                _send_email(recipients, subject, body, attachments)
-                print(f"[Scheduler] Sent {period_label} report for {company.code} to {recipients}")
-            except Exception as exc:
-                print(f"[Scheduler] Failed to send report for {company.code}: {exc}")
