@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import TokenData
 from database import get_db
 from dependencies import get_current_user, verify_company_access
+import globals as g
 import models
 
 router = APIRouter()
@@ -113,3 +114,38 @@ async def update_violation_status(
 
     await db.commit()
     return {"id": violation_id, "review_status": review_status}
+
+
+@router.post("/api/test/violation")
+async def test_violation(
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Test endpoint: manually push a fake violation into the queue to verify notifications."""
+    company_result = await db.execute(
+        select(models.Company).where(
+            func.upper(models.Company.code) == func.upper(current_user.company_code)
+        )
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    cameras_result = await db.execute(
+        select(models.Camera).where(models.Camera.company_id == company.id).limit(1)
+    )
+    camera = cameras_result.scalar_one_or_none()
+    if not camera:
+        raise HTTPException(status_code=404, detail="No camera found for this company")
+
+    if g.violation_queue is None:
+        raise HTTPException(status_code=503, detail="Violation queue not ready")
+
+    await g.violation_queue.put({
+        "camera_id": camera.id,
+        "violations": ["head"],
+        "worker_id": 0,
+        "snapshot_path": None,
+    })
+
+    return {"status": "ok", "message": f"Test violation queued for camera {camera.id}"}

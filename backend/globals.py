@@ -12,3 +12,4 @@ camera_threads: dict = {}
 violation_queue: Optional[asyncio.Queue] = None
 consumer_task = None
 main_loop = None
+ws_manager = None  # WebSocketManager instance, set at startup

@@ -67,6 +67,25 @@ async def save_violation_async(payload: dict):
                 f"[consumer] Saved violation(s) for camera {camera_id} - "
                 f"{payload.get('violations')}, worker_id={payload.get('worker_id')}"
             )
+
+            import datetime as _dt
+            from services.notification_service import send_violation_notifications
+            _ts = _dt.datetime.utcnow().isoformat() + "Z"
+            _loc = str(cam.location or camera_id)
+            for _v in payload.get('violations', []):
+                if _v not in allowed_types:
+                    continue
+                try:
+                    await send_violation_notifications(
+                        company_id=company_id,
+                        violation_type=_v,
+                        camera_id=camera_id,
+                        camera_location=_loc,
+                        snapshot_path=payload.get('snapshot_path'),
+                        timestamp=_ts,
+                    )
+                except Exception as _ne:
+                    print(f"[consumer] Notification error for {_v}: {_ne}")
         except Exception as e:
             await session.rollback()
             print(f"[consumer] Error saving violation: {e}")

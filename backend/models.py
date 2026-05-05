@@ -149,6 +149,20 @@ class CompanyModelCamera(Base):
     model = relationship("ModelMeta", back_populates="camera_assignments")
 
 
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+    id           = Column(Integer, primary_key=True, index=True)
+    user_id      = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    company_id   = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
+    token        = Column(String, nullable=False, unique=True)
+    device_label = Column(String, nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen    = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user    = relationship("User")
+    company = relationship("Company")
+
+
 class CompanyNotificationSettings(Base):
     __tablename__ = "company_notification_settings"
     id = Column(Integer, primary_key=True, index=True)

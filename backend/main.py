@@ -10,8 +10,9 @@ from sqlalchemy import text
 from database import Base, engine
 import globals as g
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from routes import auth, cameras, detections, users, reports, notifications
+from routes import auth, cameras, detections, users, reports, notifications, devices as devices_router
 from routes import models as models_router
+from services.notification_service import WebSocketManager
 from services.model_service import ensure_company_model_cameras_schema
 from services.violation_service import violation_consumer_task
 from services.report_scheduler import send_daily_reports, send_weekly_reports, send_monthly_reports
@@ -35,6 +36,7 @@ app.include_router(detections.router)
 app.include_router(models_router.router)
 app.include_router(reports.router)
 app.include_router(notifications.router)
+app.include_router(devices_router.router)
 
 
 @app.get("/")
@@ -76,6 +78,8 @@ async def startup_event():
     g.main_loop = asyncio.get_event_loop()
     g.violation_queue = asyncio.Queue()
     g.consumer_task = asyncio.create_task(violation_consumer_task(g.violation_queue))
+    g.ws_manager = WebSocketManager()
+    print("[startup] WebSocket manager initialized.")
 
     # Daily   → every day at 17:30 Turkey time (14:30 UTC)
     scheduler.add_job(send_daily_reports,   "cron", hour=14, minute=30, id="daily_reports")
