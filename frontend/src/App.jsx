@@ -5,6 +5,8 @@ import { TopNav } from './components/TopNav';
 import LoginPage from './components/LoginPage';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppearanceProvider } from './context/AppearanceContext';
+import { ViolationToast } from './components/ViolationToast';
+import { useViolationSocket } from './hooks/useViolationSocket';
 
 // Diğer bileşenler henüz boşsa hata vermemesi için basitçe import edelim
 // Eğer yukarıdaki 4. adımı yaptıysan bu importları açabilirsin:
@@ -17,9 +19,10 @@ import { Reporting } from './components/Reporting';
 import { Settings } from './components/Settings';
 
 function AppContent() {
-  const { isAuthenticated, user, isAdmin, activeCompanyCode, loading } = useAuth();
+  const { isAuthenticated, user, isAdmin, activeCompanyCode, loading, token } = useAuth();
   const [activePage, setActivePage] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const { notifications, dismiss } = useViolationSocket(token, activeCompanyCode);
 
   if (loading) {
     return (
@@ -55,7 +58,7 @@ function AppContent() {
         />
         
         <div className="flex-1 flex flex-col overflow-hidden">
-          <TopNav toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} />
+          <TopNav toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} notifications={notifications} onDismiss={dismiss} />
           
           <main className="flex-1 overflow-y-auto p-4 lg:p-6">  
             <div className="space-y-6 p-6">
@@ -85,20 +88,26 @@ function AppContent() {
 
   return (
     <div className="flex h-screen bg-gray-50 font-sans">
-      <Sidebar 
-        activePage={activePage} 
+      <Sidebar
+        activePage={activePage}
         setActivePage={setActivePage}
         isOpen={isSidebarOpen}
         setIsOpen={setIsSidebarOpen}
       />
-      
+
       <div className="flex-1 flex flex-col overflow-hidden">
-        <TopNav toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} />
-        
+        <TopNav
+          toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+          notifications={notifications}
+          onDismiss={dismiss}
+        />
+
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           {renderPage()}
         </main>
       </div>
+
+      <ViolationToast notifications={notifications} onDismiss={dismiss} />
     </div>
   );
 }

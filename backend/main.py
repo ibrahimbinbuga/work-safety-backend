@@ -1,14 +1,19 @@
 # backend/main.py
 import asyncio
 
+import asyncio
+
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from sqlalchemy import text
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Base, engine
+from database import Base, engine, AsyncSessionLocal
+from auth import decode_access_token
 import globals as g
+import models
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from routes import auth, cameras, detections, users, reports, notifications, devices as devices_router
 from routes import models as models_router
@@ -37,6 +42,44 @@ app.include_router(models_router.router)
 app.include_router(reports.router)
 app.include_router(notifications.router)
 app.include_router(devices_router.router)
+
+
+@app.websocket("/api/company/{company_code}/ws/violations")
+async def violation_websocket(websocket: WebSocket, company_code: str):
+    await websocket.accept()
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+    except asyncio.TimeoutError:
+        await websocket.close(code=1008)
+        return
+
+    token_data = decode_access_token(raw)
+    if token_data is None:
+        await websocket.close(code=1008)
+        return
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(models.Company).where(
+                func.upper(models.Company.code) == company_code.upper()
+            )
+        )
+        company = result.scalar_one_or_none()
+
+    if not company:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.send_text('{"event":"connected","status":"ok"}')
+    g.ws_manager._connections[company.id].add(websocket)
+    print(f"[WS] Dashboard connected for company {company.code} (id={company.id})")
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        g.ws_manager.disconnect(websocket, company.id)
+        print(f"[WS] Dashboard disconnected for company {company.code}")
 
 
 @app.get("/")

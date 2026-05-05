@@ -1,16 +1,13 @@
 """Company notification settings endpoints."""
-import asyncio
-
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import List
 
-from auth import TokenData, decode_access_token
-from database import get_db, AsyncSessionLocal
+from auth import TokenData
+from database import get_db
 from dependencies import get_current_user
-import globals as g
 import models
 
 router = APIRouter()
@@ -95,43 +92,3 @@ async def update_notification_settings(
     return settings
 
 
-@router.websocket("/api/company/{company_code}/ws/violations")
-async def violation_websocket(websocket: WebSocket, company_code: str):
-    """
-    Real-time violation event stream.
-    Client must send its JWT as the first text message after connecting
-    (browsers cannot set Authorization headers on WebSocket connections).
-    """
-    await websocket.accept()
-
-    try:
-        raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-    except asyncio.TimeoutError:
-        await websocket.close(code=1008)
-        return
-
-    token_data = decode_access_token(raw)
-    if token_data is None:
-        await websocket.close(code=1008)
-        return
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(models.Company).where(
-                func.upper(models.Company.code) == company_code.upper()
-            )
-        )
-        company = result.scalar_one_or_none()
-
-    if not company:
-        await websocket.close(code=1008)
-        return
-
-    await websocket.send_text('{"event":"connected","status":"ok"}')
-    g.ws_manager._connections[company.id].add(websocket)
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        g.ws_manager.disconnect(websocket, company.id)
