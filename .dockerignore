@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+
+# Python
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/venv/
+backend/.env
+
+# Secrets (Render'da environment variable olarak verilecek)
+backend/safetywatch-bf753-firebase-adminsdk-fbsvc-265ba20684.json
+backend/firebase-service-account.json
+
+# Frontend (ayrı Vercel'e deploy edilecek)
+frontend/
+
+# Diğer
+.claude/
+*.md
+docker-compose.yml

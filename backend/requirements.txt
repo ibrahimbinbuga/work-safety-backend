@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 asyncpg
 psycopg2-binary
@@ -9,7 +9,7 @@ python-jose[cryptography]
 passlib[bcrypt]
 bcrypt
 python-multipart
-opencv-python
+opencv-python-headless
 ultralytics
 argon2-cffi
 openpyxl

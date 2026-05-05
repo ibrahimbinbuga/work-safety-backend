@@ -42,15 +42,29 @@ class WebSocketManager:
 
 def _ensure_firebase():
     global _firebase_initialized
-    if not _firebase_initialized:
-        service_account_path = os.getenv(
-            "FIREBASE_SERVICE_ACCOUNT_PATH", "firebase-service-account.json"
-        )
-        print(f"[FCM] Loading service account: {service_account_path}")
+    if _firebase_initialized:
+        return
+
+    # Önce dosya yolunu dene, yoksa JSON env var'ı kullan
+    service_account_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+    service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+
+    if service_account_path and os.path.exists(service_account_path):
+        print(f"[FCM] Loading service account from file: {service_account_path}")
         cred = credentials.Certificate(service_account_path)
-        firebase_admin.initialize_app(cred)
-        _firebase_initialized = True
-        print("[FCM] Firebase initialized OK")
+    elif service_account_json:
+        import json as _json
+        print("[FCM] Loading service account from FIREBASE_SERVICE_ACCOUNT_JSON env var")
+        cred = credentials.Certificate(_json.loads(service_account_json))
+    else:
+        raise RuntimeError(
+            "Firebase credentials not found. Set FIREBASE_SERVICE_ACCOUNT_PATH "
+            "or FIREBASE_SERVICE_ACCOUNT_JSON environment variable."
+        )
+
+    firebase_admin.initialize_app(cred)
+    _firebase_initialized = True
+    print("[FCM] Firebase initialized OK")
 
 
 async def _send_fcm(tokens: list[str], title: str, body: str, data: dict) -> list[str]:
