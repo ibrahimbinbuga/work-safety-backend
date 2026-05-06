@@ -1,0 +1,17 @@
+{
+  "name": "work-safety-edge-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs on your PC (Tailscale): reads phone MJPEG URL, posts violations to Render API",
+  "scripts": {
+    "start": "node worker.mjs",
+    "dry": "node worker.mjs --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}

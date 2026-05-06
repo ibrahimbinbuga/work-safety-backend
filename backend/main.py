@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Base, engine, AsyncSessionLocal
@@ -16,6 +16,7 @@ import globals as g
 import models
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from routes import auth, cameras, detections, users, reports, notifications, devices as devices_router
+from routes import worker_ingest as worker_ingest_router
 from routes import models as models_router
 from services.notification_service import WebSocketManager
 from services.model_service import ensure_company_model_cameras_schema
@@ -42,6 +43,7 @@ app.include_router(models_router.router)
 app.include_router(reports.router)
 app.include_router(notifications.router)
 app.include_router(devices_router.router)
+app.include_router(worker_ingest_router.router)
 
 
 @app.websocket("/api/company/{company_code}/ws/violations")
