@@ -1,6 +1,7 @@
 import { LayoutDashboard, Camera, BrainCircuit, AlertTriangle, FileText, Settings, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import CompanySelector from './CompanySelector';
+import logo from "../assets/logo.png";
 
 export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
   const { isAdmin, activeCompanyCode } = useAuth();
@@ -33,7 +34,11 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen }) => {
       <div className={`fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-gray-200 transform transition-transform duration-200 ease-in-out lg:translate-x-0 lg:static lg:inset-0 flex flex-col ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex items-center justify-between h-16 px-6 border-b border-gray-100">
           <div className="flex items-center gap-2 font-bold text-xl text-primary-600">
-            <Camera className="w-6 h-6" />
+            <img 
+  src={logo}
+  alt="logo"
+  className="w-6 h-6 object-contain"
+/>
             <span>SafetyWatch</span>
           </div>
           <button onClick={() => setIsOpen(false)} className="lg:hidden">
